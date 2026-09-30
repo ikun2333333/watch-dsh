@@ -1,0 +1,31 @@
+# Cloudflare Worker deployment for the watch-dsh relay.
+#
+# This is the "away from home" transport: the watch is on mobile data and the PC
+# is behind NAT, so both dial out to this Worker instead of to each other.
+#
+# Set the shared token as a secret before deploying (never commit it):
+#   npx wrangler secret put RELAY_TOKEN
+#
+# Then:
+#   npx wrangler deploy
+#
+# The deployed origin is what the bridge passes as --relay and what the watch
+# enters as its Relay URL (use the wss:// form).
+
+name = "watch-dsh-relay"
+main = "src/relay-worker.mjs"
+compatibility_date = "2026-09-01"
+
+# One Durable Object instance per PC id owns that machine's connections.
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayRoom"
+
+# SQLite-backed Durable Objects are the free-plan variant, and a plain class with
+# no storage needs no schema.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayRoom"]
+
+[observability]
+enabled = true

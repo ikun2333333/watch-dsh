@@ -1,0 +1,388 @@
+# watch-dsh
+
+Control a PC's [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) from a
+Samsung Galaxy Watch 6. You speak a request into the watch, the agent runs on the PC, and the
+reply streams back to your wrist. Approvals — the "may I run this tool?" prompts — arrive as a
+dialog you can answer from the watch, so the agent keeps working while you are away from the desk.
+
+```
+  Galaxy Watch 6                relay (optional)              PC
+  ┌──────────────┐              ┌──────────────┐        ┌──────────────────┐
+  │  watch app   │──── wss ────▶│ routes opaque│◀───────│ bridge           │
+  │  Kotlin +    │              │ sealed frames│  wss   │  owns the DSH    │
+  │  Compose     │◀─────────────│ holds no key │───────▶│  session cookie  │
+  └──────────────┘              └──────────────┘        └────────┬─────────┘
+                                                                 │ loopback
+                                                        ┌────────▼─────────┐
+                                                        │ dsh web (3080)   │
+                                                        └──────────────────┘
+```
+
+## Why there is a bridge at all
+
+`dsh web` binds `127.0.0.1` and refuses `--host 0.0.0.0` on purpose:
+
+```
+error: --host 0.0.0.0 is intentionally not supported yet for safety:
+it would expose remote code execution to the network
+```
+
+Its browser authentication is also an `HttpOnly`, authority-bound signed cookie, which a watch
+cannot present. So instead of weakening the Harness, this project adds a bridge that:
+
+1. lives on the PC and holds the browser-session credential locally,
+2. speaks the Harness's own Remote protocol over loopback,
+3. reduces the Harness's verbose event journal into watch-sized frames,
+4. exposes only that reduced surface, end-to-end encrypted, to the watch.
+
+Nothing in the Harness is patched, and its network posture is unchanged.
+
+## What works today
+
+Verified end to end on this machine (`11/11` checks, see [Verification](#verification)):
+
+| Capability | State |
+|---|---|
+| Send a request, watch the reply stream in | works |
+| Session list, open an existing session, start a new one | works |
+| Interrupt a running turn | works |
+| Answer an approval from the watch | works |
+| Voice input (system dictation) | works |
+| Reasoning summarised rather than streamed | by design — a watch has no room for a chain of thought |
+| Push notification when a background turn finishes | not yet implemented |
+| Run over the LAN (watch and PC on the same Wi-Fi) | works — `tools\lan-test.ps1`, verified over `192.168.1.50` |
+| Run over mobile data | needs a relay you deploy — see [Away from home](#away-from-home) |
+
+## Layout
+
+```
+packages/dsh-bridge/       PC side
+  src/dsh-client.mjs       DSH protocol client: mints the browser cookie, RPC + streams
+  src/descriptors.mjs      reads the exact argument names of every mounted endpoint
+  src/protocol.mjs         the wire format, and end-to-end sealing
+  src/bridge.mjs           Harness events -> watch frames; approvals; session tracking
+  src/main.mjs             entry point: dials the relay, prints the pairing values
+  src/relay-core.mjs       transport-agnostic relay routing (shared by both relays)
+  src/relay.mjs            relay for a host you control
+  src/relay-worker.mjs     relay for Cloudflare Workers
+  test/e2e.mjs             drives the whole chain the way the watch will
+packages/watch-app/        Wear OS app (Kotlin, Compose for Wear OS)
+docs/protocol.md           normative wire specification
+tools/                     toolchain bootstrap and build scripts
+  lan-test.ps1             one-command LAN setup: relay + bridge, ready for the watch
+  gen-secret.mjs           CSPRNG secret generation (Get-Random is not one)
+```
+
+## Quick start
+
+### 1. Make sure the Harness is running
+
+```powershell
+dsh web                       # serves http://127.0.0.1:3080
+```
+
+### 2. Start the relay and the bridge
+
+Two modes. **Start with the LAN one** — it needs no account and no tunnel, so it is
+the fastest way to prove the whole chain works, and it stays the lower-latency path
+afterwards.
+
+#### Pair the watch (the whole flow, one command)
+
+```powershell
+.\tools\pair-watch.ps1
+```
+
+That starts the relay and bridge if they are not already up, writes the watch's config,
+pushes it over `adb`, restarts the app, and reads back what the watch recorded:
+
+```
+[1] a relay is already listening on 8787 (started by an earlier run)
+[2] writing the watch config
+[3] using device adb-XXXXXXXXXXXX-XXXXXX._adb-tls-connect._tcp
+[4] pushing the config to /sdcard/Android/data/dev.watchdsh/files
+[5] restarting the watch app
+
+--- what the watch recorded ---
+    14:51:32  importing config for pc=my-desktop
+    14:51:32  wifi lock acquired
+    14:51:32  link=Connected
+    14:51:32  handshake: harness=ready
+    14:51:32  handshake: sessions=9
+
+Paired: the watch reached the harness and read 9 sessions.
+```
+
+**Nothing is typed on the watch.** Every failure prints its reason, including the exact
+adb commands to run if the watch is not reachable.
+
+If you would rather not push anything, `.\tools\pair-watch.ps1 -Method discovery` leaves
+the watch to find the PC itself — open the app and tap **Find my PC**.
+
+Running a script by double-clicking closes its window the instant it ends, which makes a
+success look like a crash. Use the `.cmd` wrappers for that: `tools\pair-watch.cmd` and
+`tools\lan-test.cmd` both pause before closing.
+
+#### What the config file holds, and what it must not
+
+The config mixes two kinds of fact, and conflating them caused a bug worth knowing about:
+
+| Value | On a re-write | Why |
+|---|---|---|
+| `relayUrl` for a **LAN** relay | refreshed from this machine's current address | it describes the network, and DHCP moves this machine |
+| `relayUrl` for a **remote** relay | inherited | a durable setting, not an observation |
+| `pcId` | inherited | the bridge's stable identity |
+| `relayToken` | inherited | so an already-paired watch keeps working |
+| `pairingSecret` | inherited | same reason |
+
+An earlier version read the LAN address back from the file, which made `--write-config`
+self-perpetuating: after DHCP moved this PC, every run copied the previous address straight
+back in, and the watch imported a config pointing at whatever machine held that address
+before. The symptom was a watch reporting a clean import and then failing to connect, with
+nothing pointing at the file. `packages/dsh-bridge/test/config-refresh.mjs` guards it.
+
+#### Checking everything still works
+
+```powershell
+.\tools\test-all.ps1
+```
+
+It clears `DSH_HOME` first, so the bridge must resolve its dependencies and find the Harness
+home the way a double-clicked launcher does — the fallbacks get exercised rather than assumed.
+Three suites run: `5/5` config refresh, `13/13` discovery and pairing, `11/11` end to end.
+
+#### LAN (same Wi-Fi as the PC)
+
+```powershell
+.\tools\lan-test.ps1
+```
+
+It generates the relay token with `crypto.randomBytes` and starts both processes:
+
+```
+  The watch must be on the same Wi-Fi network.
+  Watch's Relay URL will be:  ws://192.168.1.50:8787
+
+  -- LAN mode: open the watch app and tap "Find my PC" ------------------
+  (discovery is answering on udp/8788)
+
+  -- or enter these values by hand --------------------------------------
+  Relay URL       ws://192.168.1.50:8787
+  Relay token     <43-character token>
+  Pairing secret  <43-character pairing secret>
+  PC id           my-desktop
+  -----------------------------------------------------------------------
+```
+
+Press Ctrl+C to stop both. `tools\lan-test.ps1 -Port <n>` changes the port, and a port
+that is already serving is reported rather than raced — starting a second relay on a busy
+port kills both and looks like a mysterious reconnect loop.
+
+The script binds the relay to every interface but reports this machine's LAN address,
+because `0.0.0.0` is not dialable: a watch told to connect to `ws://0.0.0.0:8787`
+fails outright. The bridge dials the relay over loopback, so a DHCP lease change
+cannot break that link; only the address you type into the watch follows the machine,
+and the script re-reads it on every start.
+
+If the watch cannot connect, the usual causes, in order:
+
+1. **The watch is not on the same Wi-Fi.** A Galaxy Watch 6 reaches the network
+   either through its phone over Bluetooth or over Wi-Fi directly; for this mode it
+   needs Wi-Fi of its own.
+2. **The LAN address changed since you paired.** DHCP can move this machine to a new
+   address; re-run `lan-test.ps1` and update the Relay URL on the watch. The relay
+   token and pairing secret survive restarts, so only the URL changes.
+3. **Windows Firewall is blocking inbound TCP 8787.** This machine already has an
+   allow rule for the project's own `tools\node\node.exe`, which is what makes the
+   LAN mode work without any change; if you move the toolchain, expect a prompt.
+
+`tools\probe-lan.mjs` separates "the relay is not listening" from "something is
+filtering the traffic", by probing loopback and every LAN address:
+
+```powershell
+node tools\probe-lan.mjs
+```
+
+#### Remote (mobile data)
+
+Only needed when the watch is away from this network — see [Away from home](#away-from-home).
+
+#### Doing it by hand
+
+```powershell
+# a token both the bridge and the watch will use; keep it secret
+$token = & tools\node\node.exe tools\gen-secret.mjs token
+New-Item -ItemType Directory -Force .state | Out-Null
+Set-Content .state\relay-token $token -NoNewline
+
+# terminal 1: bind every interface so the watch can reach it
+node packages\dsh-bridge\src\relay.mjs --port 8787 --host 0.0.0.0 --token-file .state\relay-token
+
+# terminal 2: dial the LAN address, which is also what the watch will be told
+node packages\dsh-bridge\src\main.mjs --relay ws://192.168.1.50:8787 `
+    --token-file .state\relay-token --state .state
+```
+
+`node` is not on this machine's `PATH`; the harness-bundled runtime is at
+`tools\node\node.exe`.
+
+### 3. Build and install the watch app
+
+```powershell
+.\tools\bootstrap-android.ps1          # JDK 21 + Android SDK (~700 MiB, one time)
+.\tools\build-watch.ps1                # -> packages\watch-app\app\build\outputs\apk\debug\app-debug.apk
+```
+
+**Install the debug APK for LAN mode.** Android blocks cleartext traffic by default, and a
+LAN relay has no TLS in front of it, so only the debug variant permits the `ws://` URL —
+a release APK requires `wss://`. That split is deliberate: see
+[Debug-only cleartext](#debug-only-cleartext).
+
+Install on the watch. Enable developer options and wireless debugging on the watch
+(Settings → About watch → Software → tap Software version 5 times), then pair and install:
+
+```powershell
+$adb = tools\android\sdk\platform-tools\adb.exe
+& $adb pair <watch-ip>:<pair-port>     # code shown on the watch
+& $adb connect <watch-ip>:<debug-port>
+& $adb install -r packages\watch-app\app\build\outputs\apk\debug\app-debug.apk
+```
+
+### 4. Pair
+
+Open the app. It shows four rows; tap each one and enter the value the bridge printed.
+The watch offers dictation, so you can also speak them. Then tap **Connect**.
+
+## Away from home
+
+A watch on mobile data and a PC behind NAT cannot reach each other directly, and this machine has
+no server to relay through. The fix is a free Cloudflare Worker, which is the one always-on public
+endpoint that needs neither a credit card nor a host to administer:
+
+```powershell
+cd packages\dsh-bridge
+npx wrangler secret put RELAY_TOKEN     # paste the same token as .state\relay-token
+npx wrangler deploy
+```
+
+`wrangler.toml` is already configured. Then restart the bridge pointed at the deployed Worker:
+
+```powershell
+node packages\dsh-bridge\src\main.mjs `
+    --relay wss://watch-dsh-relay.<your-subdomain>.workers.dev `
+    --token-file ..\..\.state\relay-token --state ..\..\.state
+```
+
+and enter that `wss://` URL as the watch's **Relay URL**.
+
+Notes on the free tier: Durable Objects and WebSocket Hibernation are both on the free plan, and
+incoming WebSocket messages bill at a 20:1 ratio with protocol pings free, so an always-attached
+bridge plus occasional watch traffic stays far inside the daily limits. The relay routes opaque
+ciphertext and holds no key, so a compromised relay can drop traffic but cannot read a prompt or
+forge an approval.
+
+If you do have a host (a home server, a VPS), skip the Worker entirely and run
+`node src/relay.mjs` on it with `--host 0.0.0.0` and a TLS terminator in front, then point the
+bridge and the watch at its `wss://` URL.
+
+## Security model
+
+- **The relay is untrusted.** Every application frame is sealed with AES-256-GCM under a key
+  derived from a 32-byte pairing secret the relay never sees. Two directional keys
+  (`SHA-256("v1:" + direction + ":" + secret)`) stop a frame from being replayed back at its
+  sender. See [docs/protocol.md](docs/protocol.md).
+- **The Harness is untouched.** It keeps its loopback bind, its cookie, and its refusal to expose
+  remote code execution to the network. The bridge is a local client, exactly like a browser.
+- **The watch surface is narrow.** The bridge exposes nine commands and ten events, not the
+  Harness's 84 endpoints. A watch cannot, for example, read arbitrary files: no such frame exists.
+- **The pairing secret is the whole trust anchor.** Anyone who has it and the relay URL can drive
+  the agent. It is generated on first run, written `.state/pairing-secret` with owner-only
+  permissions, and never leaves the PC and the watch.
+
+## Verification
+
+The chain is tested without an Android device by driving the same sealed frames the watch sends:
+
+```powershell
+node packages\dsh-bridge\test\e2e.mjs
+```
+
+```
+PASS  bridge answers hello
+PASS  session list returns rows
+PASS  session created
+PASS  prompt accepted
+PASS  turn ended within budget
+PASS  streamed text arrived                      ("watch-ok")
+PASS  streamed text matches the request
+PASS  transcript has user and assistant entries   (["user","user","assistant"])
+PASS  assistant entry contains the reply
+PASS  empty prompt is rejected                    (bad-request)
+PASS  unknown command is rejected                 (unsupported)
+11/11 checks passed
+```
+
+Other tools:
+
+```powershell
+node packages\dsh-bridge\src\probe.mjs     # is the Harness reachable with a minted cookie?
+node packages\dsh-bridge\src\sample.mjs    # dump real session frames
+node packages\dsh-bridge\src\catalog.mjs   # every Remote endpoint this Harness mounts
+```
+
+## Debug-only cleartext
+
+Android refuses cleartext traffic by default, which would reject the `ws://` URL that LAN
+mode needs: a relay on a local address has no TLS terminator in front of it. The app therefore
+splits the policy by build variant:
+
+| Variant | Cleartext | Use |
+|---|---|---|
+| `debug` | permitted | LAN mode, and the only variant that can reach `ws://` |
+| `release` | blocked | remote mode, which must use `wss://` |
+
+The debug policy lives in `app/src/debug/` alone, so a release build cannot inherit it. This is
+verifiable rather than asserted:
+
+```powershell
+Select-String -Path packages\watch-app\app\build\intermediates\merged_manifest*\*\*\AndroidManifest.xml `
+              -Pattern networkSecurityConfig
+```
+
+Only the debug merged manifest matches.
+
+What cleartext does and does not expose on your LAN:
+
+- **Not exposed:** prompts, replies, transcripts, and approval decisions. Those are sealed end to
+  end with AES-256-GCM under the pairing secret, which the relay never sees, so a LAN observer
+  gets ciphertext whether the transport is `ws://` or `wss://`.
+- **Exposed:** the relay token travels in the connection URL, so anyone capturing LAN traffic
+  could read it and impersonate the watch to the relay.
+
+That second point is acceptable on your own network but is exactly why the permission is scoped to
+debug builds. If you would rather not have the token on the wire at all in LAN mode, treat the
+relay token as disposable: rotate it with `tools\gen-secret.mjs token` and re-enter it on the watch
+after a LAN session, or run the remote (TLS) mode instead.
+
+## Environment notes
+
+Two constraints shaped the tooling, both worth knowing before changing the scripts:
+
+- **Only Node can reach the network here.** PowerShell's `Invoke-WebRequest` and `curl` fail with
+  a TLS error under this sandbox, so every download goes through `tools/download.mjs` (Node's
+  `fetch`).
+- **`gradle.org` is unreachable, GitHub releases are unreliable.** Gradle comes from the Tencent
+  mirror and is verified against the SHA-256 published by gradle.org. The Android SDK comes from
+  `dl.google.com`, which works.
+
+`tools/build-watch.ps1` pins the toolchain under `tools/` and touches nothing global. A few
+version choices are deliberate and documented where they are made:
+
+- **compileSdk 37 preview (`CinnamonBun`).** Wear Compose 1.7 is the first release with the
+  material3 `Scaffold` this app uses, and it requires API 37, which currently exists only as a
+  preview platform. `targetSdk` stays at 35 so no untested runtime behaviour is opted into.
+- **No text-input component.** Wear Material 3 ships no text field — a watch has no keyboard — so
+  every text value, including the four pairing values, is entered through the system input
+  activity that dictation uses.
+- **Icons are declared inline.** `material-icons-extended` added ~60 MiB to the APK; three hand-written
+  vectors replaced it and cut the debug APK from 68.8 MiB to 38.8 MiB.

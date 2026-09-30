@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network policy for every build variant.
+
+  Cleartext is permitted because both modes need it at different times: LAN mode
+  dials a plain `ws://` relay on a private address that has no TLS terminator,
+  and Android blocks cleartext by default. Restricting the permission to the
+  debug variant would mean the optimised release build — the one worth installing
+  on a watch — could not reach a LAN relay at all.
+
+  What this costs, precisely: a LAN observer can read the relay token from the
+  connection URL. It cannot read prompts, replies, transcripts, or approvals,
+  because those are sealed end to end with AES-256-GCM under the pairing secret,
+  which the relay never sees. Remote mode uses `wss://`, so the token is inside
+  TLS there.
+
+  The trade is deliberate: the previous split (cleartext in debug only) made the
+  fast build useless for LAN mode, which is the mode that needs no Cloudflare
+  account and therefore the one most people will use.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

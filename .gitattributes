@@ -1,0 +1,27 @@
+# Line endings are normalised to LF in the repository, whatever a contributor's
+# platform defaults to. Without this, a Windows checkout rewrites nearly every
+# file, which makes diffs unreadable and hides real changes.
+* text=auto eol=lf
+
+# Windows-specific types keep CRLF, because their interpreters are the ones that
+# care: a `.cmd` or `.bat` file with LF endings misbehaves in cmd.exe.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary types must never be normalised.
+*.jks binary
+*.keystore binary
+*.apk binary
+*.aab binary
+*.aar binary
+*.jar binary
+*.png binary
+*.jpg binary
+*.webp binary
+*.zip binary
+
+# Generated or vendored content that should not skew language statistics.
+tools/android/** linguist-vendored
+tools/cache/** linguist-vendored
+tools/node/** linguist-vendored

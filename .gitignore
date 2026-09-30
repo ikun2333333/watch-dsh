@@ -1,0 +1,31 @@
+# Runtime state: secrets, logs, and scratch files. Never commit any of it.
+.state/
+
+# Toolchain: downloaded JDKs, SDKs, Gradle distributions, and the Node runtime
+# copied in for convenience. All of it is reproducible from tools/download.mjs.
+tools/android/
+tools/cache/
+tools/node/
+
+# Android build output
+packages/watch-app/build/
+packages/watch-app/app/build/
+packages/watch-app/.gradle/
+packages/watch-app/local.properties
+*.apk
+*.aab
+
+# Signing material for local release builds. This key signs nothing but this app
+# on your own watch, but a private key never belongs in version control.
+packages/watch-app/*.jks
+packages/watch-app/keystore.properties
+
+# Node
+node_modules/
+
+# Editors and OS noise
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+.DS_Store
