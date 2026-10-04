@@ -14,6 +14,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { hostname, networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Bridge } from './bridge.mjs';
 import { readConfig, writeConfig } from './config.mjs';
 import { loadDescriptors } from './descriptors.mjs';
@@ -57,7 +58,26 @@ function resolveSecret(flagValue, fileValue, envValue, generate) {
 const args = parseArgs(process.argv.slice(2));
 const dshHome = String(args['dsh-home'] ?? process.env.DSH_HOME ?? join(process.env.USERPROFILE ?? '', '.dsh'));
 const baseUrl = String(args.dsh ?? process.env.DSH_WEB_URL ?? 'http://127.0.0.1:3080');
-const stateDir = String(args.state ?? join(process.cwd(), '.state'));
+
+/**
+ * Where the bridge keeps the state a watch depends on.
+ *
+ * Not relative to the working directory, which is what it used to be. That made
+ * the pairing secret, the relay token, and the pc id depend on *where* the bridge
+ * was launched from: started from the repository it found them and reused them,
+ * and started from anywhere else it created a fresh `.state` and generated a new
+ * pairing secret - silently locking out every watch already paired to it. The
+ * failure looks like "the watch stopped working", with nothing pointing at the
+ * directory it was started in, and it lands hardest on exactly the setup that is
+ * most likely to hit it: a launcher, a shortcut, or a scheduled task, none of
+ * which run from the repository.
+ *
+ * So the default is anchored to this file's own location. A launcher can then be
+ * pointed anywhere and still find the same identity.
+ */
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const defaultStateDir = join(scriptDir, '..', '..', '..', '.state');
+const stateDir = String(args.state ?? process.env.WATCH_DSH_STATE ?? defaultStateDir);
 
 // A config file supplies whatever the flags did not. This is what makes a remote
 // setup reproducible: the file is a complete description of how to reach this
