@@ -108,6 +108,15 @@ const pcId = String(
   ?? fromConfig(fileConfig?.pcId)
   ?? hostname().toLowerCase().replace(/[^a-z0-9-]/gu, '-'),
 );
+/**
+ * Where a locally run relay listens.
+ *
+ * Used when this machine must advertise a relay for a *broadcast*, which is only
+ * ever useful on this network. It is the port `lan-test.ps1` and the documented
+ * local setup use.
+ */
+const LOCAL_RELAY_PORT = 8787;
+
 /** Whether a relay URL points at this machine rather than somewhere durable. */
 function isLocalRelay(url) {
   if (url === undefined) return false;
@@ -139,24 +148,22 @@ const relayUrl = String(
 );
 
 /**
- * Turn the address the bridge dials into the address a watch can dial.
+ * The address the bridge itself can dial, made watch-dialable.
  *
- * These differ for a locally run relay, and the difference is easy to get wrong:
- * a relay started with `--host 0.0.0.0` accepts connections on every interface,
- * but neither `0.0.0.0` nor `127.0.0.1` is reachable *from the watch* — the first
- * is not an address at all, and the second means "this device". So whenever the
- * relay is local, the banner reports this machine's LAN address instead, while
- * the bridge itself keeps using the address it was given.
+ * Only a *local* relay needs rewriting: one started with `--host 0.0.0.0` accepts
+ * connections on every interface, but neither `0.0.0.0` nor `127.0.0.1` is
+ * reachable from the watch — the first is not an address at all, and the second
+ * means "this device". So a local relay becomes this machine's LAN address.
  *
- * A remote relay (`wss://host`) is passed through untouched.
+ * A remote relay is returned unchanged, because a watch away from home has to
+ * reach it by that exact public name. What a broadcast advertises is a separate
+ * question, answered by {@link lanRelayUrl}.
  */
 function dialableRelayUrl(url) {
-  const parsed = new URL(url);
-  const local = parsed.hostname === '0.0.0.0' || parsed.hostname === '::' ||
-    parsed.hostname === '[::]' || parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
-  if (!local) return url;
+  if (!isLocalRelay(url)) return url;
   const address = lanAddress();
   if (address === undefined) return url;
+  const parsed = new URL(url);
   parsed.hostname = address;
   return parsed.href.replace(/\/$/u, '');
 }
@@ -172,7 +179,27 @@ function lanAddress() {
   return undefined;
 }
 
+// Two addresses answer two different questions, and conflating them made both
+// wrong.
+//
+// `watchRelayUrl` answers "which relay is this bridge attached to" - the address a
+// watch must be told to reach this PC from wherever it is. A config export carries
+// this one, including a remote `wss://` URL, because that is the point of
+// exporting a remote configuration.
+//
+// `discoveryUrl` answers "where is a relay on this network" - what a broadcast
+// answered by *this* machine can usefully advertise, which is always a LAN address
+// when one exists, even while the bridge is attached to a public relay. A watch
+// that can hear a broadcast is by definition on this network, so sending it to the
+// internet wastes the LAN and makes a local connection depend on being online.
 const watchRelayUrl = dialableRelayUrl(relayUrl);
+const discoveryUrl = lanRelayUrl() ?? watchRelayUrl;
+
+/** This machine's own relay address, or undefined when it has no LAN address. */
+function lanRelayUrl() {
+  const address = lanAddress();
+  return address === undefined ? undefined : `ws://${address}:${LOCAL_RELAY_PORT}`;
+}
 
 // Export the portable config, then exit. Doing this before connecting keeps it
 // usable on a machine that is not currently running a relay, which is exactly
@@ -196,7 +223,7 @@ let discovery;
 if (args['no-discovery'] !== true) {
   discovery = startDiscovery({
     pcId,
-    relayUrl: watchRelayUrl,
+    relayUrl: discoveryUrl,
     relayToken,
     onProbe: (event) => {
       if (event.kind === 'listening') {

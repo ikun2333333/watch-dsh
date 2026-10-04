@@ -150,8 +150,7 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
                 if (settings.isConfigured) {
                     val current = link.state.value
                     if (current == LinkState.Disconnected) {
-                        Diag.log(getApplication(), "connecting to ${settings.pcId}")
-                        link.connect(settings.toConnectionConfig())
+                        connectPreferred(settings)
                     }
                 }
             }
@@ -166,6 +165,73 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
             link.events.collect { event -> onEvent(event) }
         }
     }
+
+    /**
+     * Connect to the best address this watch can currently reach.
+     *
+     * One stored address cannot be right in both places, and the two modes need
+     * different ones: at home the PC is on the same Wi-Fi and a local address is
+     * faster and does not depend on the internet, while away only the public relay
+     * is reachable. Which one applies is discoverable rather than something to
+     * configure, because a broadcast only ever reaches the local network:
+     *
+     *   - at home the bridge answers, and its answer names the address to use
+     *   - away nothing answers, so the stored address is used
+     *
+     * The stored address is tried first when it is already local, so a LAN-only
+     * setup does not pay for a broadcast round trip on every launch.
+     */
+    private suspend fun connectPreferred(settings: Settings) {
+        val stored = settings.relayUrl
+        if (isLocalAddress(stored)) {
+            Diag.log(getApplication(), "connecting to stored LAN address ${redact(stored)}")
+            link.connect(settings.toConnectionConfig())
+            return
+        }
+
+        // A public address is stored, which means this watch has been used away from
+        // home. If the PC answers a broadcast we are home, and the local address is
+        // better: it keeps working with no internet and avoids a round trip.
+        if (Discovery.hasLocalNetwork()) {
+            val found = Discovery.findBridges(getApplication(), timeoutMs = 1200)
+            val match = found.firstOrNull { it.pcId == settings.pcId } ?: found.firstOrNull()
+            if (match != null && isLocalAddress(match.relayUrl)) {
+                Diag.log(getApplication(), "found ${match.pcId} locally at ${redact(match.relayUrl)}")
+                link.connect(
+                    ConnectionConfig(
+                        url = match.relayUrl,
+                        token = match.relayToken,
+                        pairingSecret = settings.pairingSecret,
+                        pcId = match.pcId,
+                    ),
+                )
+                return
+            }
+        }
+
+        Diag.log(getApplication(), "no local PC answered; using the stored address")
+        link.connect(settings.toConnectionConfig())
+    }
+
+    /**
+     * Whether an address is on this network.
+     *
+     * Matches the private ranges rather than resolving anything: this decides which
+     * attempt to make first, and a wrong answer only costs one failed connection.
+     */
+    private fun isLocalAddress(url: String): Boolean {
+        val host = url.removePrefix("ws://").removePrefix("wss://")
+            .substringBefore('/').substringBefore(':')
+        if (host == "localhost" || host.startsWith("127.")) return true
+        if (!host.startsWith("192.168.") && !host.startsWith("10.")) {
+            val second = host.split('.').getOrNull(1)?.toIntOrNull() ?: return false
+            return host.startsWith("172.") && second in 16..31
+        }
+        return true
+    }
+
+    /** An address without its query, for logs that are readable on the device. */
+    private fun redact(url: String): String = url.substringBefore('?')
 
     /** Persist new connection settings and connect with them. */
     fun saveConnection(relayUrl: String, relayToken: String, pairingSecret: String, pcId: String) {
