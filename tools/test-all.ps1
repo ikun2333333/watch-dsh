@@ -59,7 +59,16 @@ if (-not (Test-Path $tokenFile)) {
 # so a missing Harness surfaces as "no bridge answered the probe" - which points at
 # discovery rather than at the actual cause. Checked here so the message names the
 # real problem.
-$dshPort = 3080
+#
+# Which port matters, and guessing 3080 is wrong whenever the Harness was launched
+# elsewhere: DSH_WEB_URL names the one actually running, and the bridge prefers that
+# variable over its own default, so testing 3080 while the Harness serves 19387
+# starts a second Harness the bridge then ignores.
+$dshUrl = $env:DSH_WEB_URL
+if ([string]::IsNullOrEmpty($dshUrl)) { $dshUrl = "http://127.0.0.1:3080" }
+$dshPort = ([Uri]$dshUrl).Port
+if ($dshPort -le 0) { $dshPort = 3080 }
+
 if (-not (Test-Port $dshPort)) {
   $dshEntry = "C:\Users\q1375\AppData\Local\Programs\node-v24.19.0-win-x64\node_modules\@deepseek-ai\dsh\lib\bin.js"
   if (Test-Path $dshEntry) {
@@ -76,6 +85,7 @@ if (-not (Test-Port $dshPort)) {
     throw "start the Harness first: dsh web --port $dshPort --no-open"
   }
 }
+Write-Host "harness: $dshUrl" -ForegroundColor DarkGray
 
 # A listening port is not enough to conclude the local relay is usable: a bridge
 # may be attached to a *remote* relay (the away-from-home setup), in which case the
@@ -113,12 +123,18 @@ if ($needsBridge) {
     if (-not (Test-Port 8787)) { throw "the relay did not start; see $logDir\relay.err" }
   }
 
-  # Only a bridge serving the local relay is replaced. A remote one is left running,
-  # because the away-from-home setup is a legitimate thing to have up.
+  # Every bridge is stopped, not merely the ones pointed at a remote relay.
+  #
+  # A relay keeps one bridge per pc id, so a second bridge silently replaces the
+  # first: the displaced process stays alive, keeps its own view of which watches
+  # exist, and goes on answering frames with stale state. Two of them running is
+  # what made the pairing suite fail against a bridge whose log showed a watch id
+  # from an earlier run - the tests were talking to one process while another held
+  # the slot. Starting from none is the only reliable state.
   Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -like "*dsh-bridge*main.mjs*" -and $_.CommandLine -notlike "*ws://127.0.0.1:8787*" } |
+    Where-Object { $_.CommandLine -like "*dsh-bridge*main.mjs*" } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-  Start-Sleep -Seconds 1
+  Start-Sleep -Seconds 2
 
   Start-Process -FilePath $node -WindowStyle Hidden `
     -ArgumentList @((Join-Path $Root "packages\dsh-bridge\src\main.mjs"), "--relay", $localRelay,
