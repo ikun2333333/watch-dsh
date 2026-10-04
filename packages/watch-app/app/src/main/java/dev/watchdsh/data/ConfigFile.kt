@@ -55,7 +55,7 @@ object ConfigFile {
      *
      * @return the settings it describes, or null when there is no file or it is
      *   not a config this build understands. A malformed file is ignored rather
-     *   than reported: discovery and manual entry both still work, so failing the
+     *   than reported: entering the values by hand still works, so failing the
      *   whole first run over it would be worse than skipping it.
      */
     fun read(context: Context): Settings? {

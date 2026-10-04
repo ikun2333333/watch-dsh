@@ -83,14 +83,14 @@ class WatchLink {
   /**
    * Handle one already-decoded watch frame.
    *
-   * @param frame - the decoded frame. A frame whose `ch` is `pair` is an
-   *   unsealed pairing request; anything else has already been authenticated.
+   * Every frame that reaches here is sealed with the pairing secret, so the
+   * sender has already proven it holds the key. A frame in the clear is not a
+   * request to be answered: the secret arrives in the watch's imported config, so
+   * nothing legitimate travels unsealed.
+   *
+   * @param frame - the decoded frame.
    */
   async deliver(frame) {
-    if (frame?.ch === 'pair') {
-      await this.onPairRequest?.(frame);
-      return;
-    }
     if (frame.ch === 'cmd' && typeof frame.id === 'string') {
       await this.onCommand?.(frame);
     }
@@ -112,20 +112,6 @@ class WatchLink {
     if (!this.alive) return;
     const envelope = await sealFrame(this.#secret, 'b2w', frame);
     this.#socket.send(JSON.stringify({ ...envelope, from: this.#watchId }));
-  }
-
-  /**
-   * Send one frame unsealed.
-   *
-   * Used only for the reply to a pairing request: that is the single frame the
-   * watch cannot yet open, and treating it like every other frame would lock the
-   * watch out of the handshake that gives it the key.
-   *
-   * @param frame - frame to send as plain JSON.
-   */
-  sendPlain(frame) {
-    if (!this.alive) return;
-    this.#socket.send(JSON.stringify({ ...frame, from: this.#watchId }));
   }
 
   /** Convenience: send a failure response for a command. */
@@ -391,7 +377,6 @@ export class Bridge {
   attachWatch(socket, watchId) {
     const watch = new WatchLink(this.#secret, socket, watchId);
     watch.onCommand = (frame) => this.#onCommand(watch, frame);
-    watch.onPairRequest = (frame) => this.handlePairRequest(watch, frame);
     this.#watches.add(watch);
     void (async () => {
       await watch.send(event(EVENTS.STATUS, { status: this.status }));
@@ -413,47 +398,15 @@ export class Bridge {
     }
   }
 
-  /**
-   * Answer a watch's first contact.
-   *
-   * The frame arrives unsealed because the watch does not yet hold the pairing
-   * secret. Authorization already happened at the relay, which admits only peers
-   * presenting the shared token, so handing the secret over here is what lets a
-   * watch pair with nothing typed while still refusing every anonymous device.
-   *
-   * @param watch - the requesting watch.
-   * @param frame - the raw, unsealed request.
-   */
-  async handlePairRequest(watch, frame) {
-    const id = frame.id;
-    if (frame.cmd === COMMANDS.PAIR) {
-      // Deliberately unsealed: the watch has no key yet, so this reply must be
-      // readable to be useful.
-      watch.sendPlain({
-        ch: 'res',
-        id,
-        ok: true,
-        protocol: PROTOCOL_VERSION,
-        pcId: this.#pcId,
-        pairingSecret: this.#secret,
-      });
-      return;
-    }
-    // Anything else unsealed is either broken or hostile: without a verified
-    // secret there is no way to tell who sent it, so it is refused rather than
-    // guessed at.
-    watch.sendPlain(failure(typeof id === 'string' ? id : 'unknown', ERROR_CODES.UNSUPPORTED, 'seal your frames'));
-  }
-
   /** Resolve one watch command. */
   async #onCommand(watch, frame) {
     const id = frame.id;
     try {
       switch (frame.cmd) {
         case COMMANDS.HELLO:
-          // Sealed from here on: the watch learned the pairing secret from the
-          // unsealed pairing handshake, so anything that reaches this point has
-          // proven it holds that secret and is genuinely this user's watch.
+          // Sealed from here on: the watch holds the pairing secret from its
+          // imported config, so anything that reaches this point has proven it
+          // holds that secret and is genuinely this user's watch.
           await watch.ok(id, {
             protocol: PROTOCOL_VERSION,
             bridge: 'watch-dsh/1',

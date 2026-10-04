@@ -11,8 +11,6 @@ import dev.watchdsh.net.BridgeEvent
 import dev.watchdsh.net.BridgeException
 import dev.watchdsh.net.BridgeLink
 import dev.watchdsh.net.ConnectionConfig
-import dev.watchdsh.net.DiscoveredBridge
-import dev.watchdsh.net.Discovery
 import dev.watchdsh.net.LinkState
 import dev.watchdsh.net.WifiKeeper
 import dev.watchdsh.protocol.BridgeStatus
@@ -31,12 +29,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /** How often buffered streamed text is published; roughly a readable cadence. */
 private const val STREAM_FLUSH_MS = 100L
-
-/** How long to wait for the link to come up during pairing. */
-private const val PAIRING_WAIT_MS = 20_000L
-
-/** A pause so the relay's ready frame lands before the pairing request is sent. */
-private const val READY_FRAME_GRACE_MS = 300L
 
 /** One line of the conversation as the watch shows it. */
 data class ChatMessage(
@@ -83,10 +75,6 @@ data class UiState(
     val approvals: List<PendingApproval> = emptyList(),
     val notice: String? = null,
     val lastError: String? = null,
-    /** Bridges found on the local network, newest scan wins. */
-    val discovered: List<DiscoveredBridge> = emptyList(),
-    /** Whether a scan is in flight, so the button can say so. */
-    val scanning: Boolean = false,
 )
 
 /**
@@ -174,14 +162,6 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
      * one is reachable away. Trying them in order needs no user choice and no mode
      * flag that could disagree with the addresses actually stored.
      *
-     * This deliberately does not use discovery to decide where it is. A broadcast
-     * only reaches the local network, which makes it a natural way to detect "at
-     * home" - but routers that drop traffic between wireless clients are common
-     * enough that this project measured one, where the same watch that reaches the
-     * PC over TCP could not deliver a broadcast to it at all. A decision that
-     * depends on a packet the network may discard is a decision that silently goes
-     * the wrong way.
-     *
      * A stale local address costs one failed attempt, so a DHCP change repairs
      * itself: the local try fails and the public one carries the connection.
      */
@@ -196,134 +176,26 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
     private fun redact(url: String): String = url.substringBefore('?')
 
     /** Persist new connection settings and connect with them. */
-    fun saveConnection(relayUrl: String, relayToken: String, pairingSecret: String, pcId: String) {
+    fun saveConnection(
+        relayUrl: String,
+        relayToken: String,
+        pairingSecret: String,
+        pcId: String,
+        lanRelayUrl: String = "",
+    ) {
         viewModelScope.launch {
-            settingsStore.saveConnection(relayUrl, relayToken, pairingSecret, pcId)
-            link.connect(
-                Settings(relayUrl.trim(), relayToken.trim(), pairingSecret.trim(), pcId.trim()).toConnectionConfig(),
+            settingsStore.saveConnection(relayUrl, relayToken, pairingSecret, pcId, lanRelayUrl)
+            // Built from the same values that were just stored, so the local address
+            // is tried first here too rather than only after a restart.
+            connectPreferred(
+                Settings(
+                    relayUrl = relayUrl.trim(),
+                    lanRelayUrl = lanRelayUrl.trim(),
+                    relayToken = relayToken.trim(),
+                    pairingSecret = pairingSecret.trim(),
+                    pcId = pcId.trim(),
+                ),
             )
-        }
-    }
-
-    /**
-     * Scan the local network for bridges.
-     *
-     * On Wi-Fi this removes the need to type anything: the bridge answers with the
-     * relay address, token, and pc id, and the pairing secret follows over the
-     * authenticated connection.
-     */
-    fun scanForBridges() {
-        viewModelScope.launch {
-            _state.update { it.copy(scanning = true, lastError = null) }
-            try {
-                if (!Discovery.hasLocalNetwork()) {
-                    _state.update {
-                        it.copy(
-                            scanning = false,
-                            discovered = emptyList(),
-                            lastError = "No Wi-Fi network. Connect the watch to Wi-Fi, then scan again.",
-                        )
-                    }
-                    return@launch
-                }
-                // The address this watch last connected to is probed by unicast as
-                // well as broadcast. On a router that drops traffic between
-                // wireless clients, broadcast never arrives while unicast does, so
-                // without this the app could not rediscover a PC it had already
-                // used - which is exactly the symptom that led here.
-                val remembered = _state.value.settings.relayUrl
-                    .removePrefix("ws://").removePrefix("wss://")
-                    .substringBefore('/').substringBefore(':')
-                    .takeIf { it.isNotBlank() }
-                val found = Discovery.findBridges(
-                    context = getApplication(),
-                    knownHosts = listOfNotNull(remembered),
-                )
-                _state.update {
-                    it.copy(
-                        scanning = false,
-                        discovered = found,
-                        // Discovery can legitimately fail while manual entry still
-                        // works - a router that drops broadcasts, or a watch on a
-                        // different band - so the fallback is named here rather
-                        // than leaving the user with only a failure.
-                        lastError = if (found.isEmpty()) {
-                            "No PC answered. Check both are on the same Wi-Fi, or enter the address below."
-                        } else {
-                            null
-                        },
-                    )
-                }
-            } catch (error: Exception) {
-                _state.update { it.copy(scanning = false, lastError = error.message ?: "Scan failed") }
-            }
-        }
-    }
-
-    /**
-     * Pair with a discovered bridge.
-     *
-     * Everything is already known except the pairing secret, and the bridge hands
-     * that over once the relay has authenticated the relay token from discovery —
-     * so this is the whole pairing flow, with nothing typed.
-     */
-    fun pairWith(bridge: DiscoveredBridge) {
-        viewModelScope.launch {
-            _state.update { it.copy(scanning = true, lastError = null) }
-            try {
-                // Connect with no secret, which is the signal to pair.
-                settingsStore.saveConnection(bridge.relayUrl, bridge.relayToken, "", bridge.pcId)
-                link.connect(
-                    ConnectionConfig(
-                        url = bridge.relayUrl,
-                        token = bridge.relayToken,
-                        pairingSecret = "",
-                        pcId = bridge.pcId,
-                    ),
-                )
-                // Wait for the socket, then ask for the secret.
-                val secret = waitForPairingSecret()
-                if (secret == null) {
-                    _state.update { it.copy(scanning = false, lastError = "The PC did not answer the pairing request.") }
-                    return@launch
-                }
-                settingsStore.saveConnection(bridge.relayUrl, bridge.relayToken, secret, bridge.pcId)
-                _state.update { it.copy(scanning = false, lastError = null) }
-            } catch (error: Exception) {
-                _state.update { it.copy(scanning = false, lastError = error.message ?: "Pairing failed") }
-            }
-        }
-    }
-
-    /**
-     * Wait until the link is up, then adopt the pairing secret.
-     *
-     * The socket opens asynchronously, so this waits on the link state rather than
-     * assuming the connection is ready the moment `connect` returns. It also gives
-     * the relay's `ready` frame a moment to arrive, since the pairing request must
-     * echo the connection id that frame carries.
-     */
-    private suspend fun waitForPairingSecret(): String? {
-        Diag.log(getApplication(), "pairing: waiting for the link")
-        val connected = withTimeoutOrNull(PAIRING_WAIT_MS) {
-            link.state.first { it == LinkState.Connected || it == LinkState.Unauthorized }
-        }
-        Diag.log(getApplication(), "pairing: link reached $connected")
-        if (connected != LinkState.Connected) {
-            _state.update { it.copy(lastError = "The watch could not reach the relay.") }
-            return null
-        }
-        // The ready frame usually arrives with the socket, but it is a separate
-        // message; a short pause keeps this from racing it.
-        delay(READY_FRAME_GRACE_MS)
-        return try {
-            val secret = link.adoptPairingSecret()
-            Diag.log(getApplication(), "pairing: absorbed secret=${secret?.length ?: 0}chars")
-            secret
-        } catch (error: BridgeException) {
-            Diag.log(getApplication(), "pairing failed: ${error.code} ${error.message}")
-            _state.update { it.copy(lastError = error.message) }
-            null
         }
     }
 

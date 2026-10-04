@@ -84,14 +84,6 @@ data class Envelope(
 
 /** Command names. The strings are wire contract. */
 object Commands {
-    /**
-     * First contact from a watch that has no pairing secret yet.
-     *
-     * The one command sent unsealed, because sealing needs the very secret it
-     * asks for. Its authorization is the relay's: only a peer presenting the
-     * shared relay token can be attached to the bridge at all.
-     */
-    const val PAIR = "pair"
     const val HELLO = "hello"
     const val SESSIONS = "sessions"
     const val TRANSCRIPT = "transcript"
@@ -229,38 +221,6 @@ object ApprovalOutcome {
     const val ALLOW_ONCE = "allowed-once"
     const val REJECTED = "rejected"
 }
-
-/**
- * Build an unsealed pairing request.
- *
- * That this is not a [command] is the point: pairing travels on its own channel
- * because the watch has no key to seal a command with. `from` must carry the id
- * the relay assigned in its `ready` frame, since that is how the bridge resolves
- * where to send the answer.
- *
- * @param id - correlation id echoed by the reply.
- * @param from - the relay-assigned connection id.
- */
-fun pairRequest(id: String, from: String): JsonObject =
-    JsonObject(
-        buildMap {
-            put("ch", kotlinx.serialization.json.JsonPrimitive("pair"))
-            put("cmd", kotlinx.serialization.json.JsonPrimitive(Commands.PAIR))
-            put("id", kotlinx.serialization.json.JsonPrimitive(id))
-            put("from", kotlinx.serialization.json.JsonPrimitive(from))
-        },
-    )
-
-/** The bridge's answer to a pairing request, carrying the end-to-end key. */
-@Serializable
-data class PairReply(
-    val id: String = "",
-    val ok: Boolean = false,
-    val protocol: Int? = null,
-    val pcId: String? = null,
-    val pairingSecret: String? = null,
-    val error: CommandError? = null,
-)
 
 /**
  * Build a command frame.

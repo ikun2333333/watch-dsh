@@ -52,8 +52,8 @@ fun WatchDshApp() {
             when {
                 showSettings && screen != Screen.Chat -> SettingsScreen(
                     state = state,
-                    onSave = { url, token, secret, pcId ->
-                        viewModel.saveConnection(url, token, secret, pcId)
+                    onSave = { url, lanUrl, token, secret, pcId ->
+                        viewModel.saveConnection(url, token, secret, pcId, lanUrl)
                         showSettings = false
                         screen = Screen.Sessions
                     },
@@ -67,16 +67,11 @@ fun WatchDshApp() {
 
                 screen == Screen.Setup -> SetupScreen(
                     state = state,
-                    onScan = viewModel::scanForBridges,
-                    onPick = { bridge ->
-                        viewModel.pairWith(bridge)
-                        // The session list is where a successful pairing lands; a
+                    onSaveManual = { url, lanUrl, token, secret, pcId ->
+                        viewModel.saveConnection(url, token, secret, pcId, lanUrl)
+                        // The session list is where a successful connection lands; a
                         // failure surfaces there as a status line rather than
                         // trapping the user on this screen.
-                        screen = Screen.Sessions
-                    },
-                    onSaveManual = { url, token, secret, pcId ->
-                        viewModel.saveConnection(url, token, secret, pcId)
                         screen = Screen.Sessions
                     },
                 )

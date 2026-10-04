@@ -31,7 +31,13 @@ import dev.watchdsh.voice.VoiceInput
 @Composable
 fun SettingsScreen(
     state: UiState,
-    onSave: (relayUrl: String, relayToken: String, pairingSecret: String, pcId: String) -> Unit,
+    onSave: (
+        relayUrl: String,
+        lanRelayUrl: String,
+        relayToken: String,
+        pairingSecret: String,
+        pcId: String,
+    ) -> Unit,
     onForget: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -46,6 +52,7 @@ fun SettingsScreen(
             val text = VoiceInput.extractText(result.data) ?: return@rememberLauncherForActivityResult
             when (pendingTarget) {
                 EditableField.RelayUrl -> values.relayUrl = text
+                EditableField.LanRelayUrl -> values.lanRelayUrl = text
                 EditableField.RelayToken -> values.relayToken = text
                 EditableField.PairingSecret -> values.pairingSecret = text
                 EditableField.PcId -> values.pcId = text
@@ -77,13 +84,26 @@ fun SettingsScreen(
             }
 
             item { EditableValue("Relay URL", values.relayUrl, "not set") { edit(EditableField.RelayUrl, "Relay URL") } }
+            item {
+                EditableValue("LAN Relay URL", values.lanRelayUrl, "optional") {
+                    edit(EditableField.LanRelayUrl, "LAN Relay URL")
+                }
+            }
             item { EditableValue("Relay token", values.relayToken, "not set") { edit(EditableField.RelayToken, "Relay token") } }
             item { EditableValue("Pairing secret", values.pairingSecret, "not set") { edit(EditableField.PairingSecret, "Pairing secret") } }
             item { EditableValue("PC id", values.pcId, "not set") { edit(EditableField.PcId, "PC id") } }
 
             item {
                 Button(
-                    onClick = { onSave(values.relayUrl, values.relayToken, values.pairingSecret, values.pcId) },
+                    onClick = {
+                        onSave(
+                            values.relayUrl,
+                            values.lanRelayUrl,
+                            values.relayToken,
+                            values.pairingSecret,
+                            values.pcId,
+                        )
+                    },
                     modifier = Modifier.fillMaxWidth(),
                     enabled = values.isComplete,
                 ) {

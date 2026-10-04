@@ -6,21 +6,16 @@ import dev.watchdsh.protocol.CommandResponse
 import dev.watchdsh.protocol.Commands
 import dev.watchdsh.protocol.Envelope
 import dev.watchdsh.protocol.Events
-import dev.watchdsh.protocol.PairReply
 import dev.watchdsh.protocol.ProtocolJson
 import dev.watchdsh.protocol.PROTOCOL_VERSION
 import dev.watchdsh.protocol.Sealing
 import dev.watchdsh.protocol.SessionRow
 import dev.watchdsh.protocol.TranscriptEntry
-import dev.watchdsh.protocol.pairRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -163,19 +158,10 @@ class BridgeLink(
     /**
      * The id the relay assigned this connection, learned from its `ready` frame.
      *
-     * Pairing needs it: the bridge resolves where to send the pairing answer from
-     * this value, so a request without it is dropped.
+     * Used for diagnostics only: the relay stamps this id on frames it forwards, so
+     * nothing the watch sends has to carry it.
      */
     private var relayId: String? = null
-
-    /** Suspended pairing request, completed when the bridge answers. */
-    private var pairingReply: kotlin.coroutines.Continuation<PairReply>? = null
-
-    /** One in-flight pairing attempt, shared by every caller. */
-    private var pairingInFlight: kotlinx.coroutines.Deferred<String?>? = null
-
-    /** Serialises access to [pairingInFlight], so two callers cannot both start one. */
-    private val pairingLock = kotlinx.coroutines.sync.Mutex()
 
     /**
      * Observes link milestones, including transport failures.
@@ -282,40 +268,6 @@ class BridgeLink(
                 wifiKeeper?.acquire()
                 _state.value = LinkState.Connected
                 scope.launch {
-                    // A watch that has no secret yet is not misconfigured: it is
-                    // being paired. It asks for the secret over the relay's
-                    // authenticated link, then carries on exactly as a
-                    // pre-paired watch does.
-                    val armed = !this@BridgeLink.config?.pairingSecret.isNullOrBlank()
-                    observer?.invoke("onOpen: armedWithSecret=$armed")
-                    if (!armed) {
-                        // Retried, because the first request can be dropped.
-                        //
-                        // The relay tells the bridge about a new watch in a separate
-                        // frame from the `ready` frame the watch gets, and the bridge
-                        // discards a frame from a watch it has not been told about
-                        // yet. A watch that asks immediately can therefore be
-                        // ignored through no fault of either side, and a single
-                        // attempt would leave it unpaired until something happened to
-                        // reconnect it.
-                        //
-                        // The second attempt needs no special timing: by the time the
-                        // first has failed the notice has arrived, so the retry
-                        // succeeds. Asking twice is what makes the outcome
-                        // independent of which frame won the race.
-                        var secret: String? = null
-                        var round = 0
-                        while (secret == null && round < PAIR_ATTEMPTS) {
-                            secret = runCatching { adoptPairingSecret() }
-                                .onFailure { observer?.invoke("onOpen: pairing threw ${it.message}") }
-                                .getOrNull()
-                            round += 1
-                            if (secret == null && round < PAIR_ATTEMPTS) {
-                                observer?.invoke("onOpen: no pairing answer yet, asking again")
-                                delay(PAIR_RETRY_DELAY_MS)
-                            }
-                        }
-                    }
                     runCatching { handshake() }
                         .onFailure { observer?.invoke("onOpen: handshake threw ${it.message}") }
                 }
@@ -465,101 +417,20 @@ class BridgeLink(
     }
 
     /**
-     * Fetch the pairing secret from the bridge and start using it for this link.
-     *
-     * Persisting it belongs to the caller, which owns storage; this only makes the
-     * live link use it.
-     *
-     * Concurrent callers share one in-flight request. Both the connection callback
-     * and the setup screen can ask for pairing at the same moment, and two
-     * requests would race over the single pending-reply slot, leaving neither
-     * answered.
-     *
-     * @return the secret that was adopted, or null when no bridge answered.
-     */
-    suspend fun adoptPairingSecret(): String? {
-        val pending = pairingLock.withLock {
-            // A settled attempt is discarded so the next call is a fresh attempt:
-            // reusing one would make a single failure permanent.
-            val existing = pairingInFlight
-            if (existing != null && existing.isActive) return@withLock existing
-            scope.async {
-                val secret = pair() ?: return@async null
-                val current = config ?: return@async null
-                config = current.copy(pairingSecret = secret)
-                // Keys are derived from the secret, so an earlier derivation is wrong.
-                sealKeys.clear()
-                observer?.invoke("pair: adopted a secret for ${current.pcId}")
-                secret
-            }.also { pairingInFlight = it }
-        }
-        return pending.await()
-    }
-
-    /**
-     * Learn the pairing secret from the bridge, with nothing typed.
-     *
-     * This is the bootstrap step, and the reason it can exist: a watch holding no
-     * secret cannot seal anything, so this one request travels unsealed. The
-     * bridge answers it because the relay already admitted this connection with
-     * the shared relay token, which is the actual authorization. Everything after
-     * this is sealed with the secret it returns.
-     *
-     * @return the pairing secret, or null when no bridge answered in time.
-     */
-    suspend fun pair(): String? = withTimeoutOrNull(PAIR_TIMEOUT_MS) {
-        val socket = webSocket ?: throw BridgeException("not-connected", "no active connection")
-        // The relay names this connection in its ready frame, and the bridge
-        // resolves the answer's destination from that id.
-        val from = relayId ?: run {
-            observer?.invoke("pair: no relay id yet, asking again shortly")
-            // The ready frame is a separate message from the upgrade, so it can
-            // still be in flight; give it a moment rather than failing the pairing.
-            delay(READY_FRAME_WAIT_MS)
-            relayId
-        } ?: throw BridgeException("not-connected", "the relay never assigned a connection id")
-        val id = UUID.randomUUID().toString()
-        observer?.invoke("pair: sending request id=$id from=$from")
-        if (!socket.send(pairRequest(id, from).toString())) {
-            throw BridgeException("not-connected", "the socket refused the pairing request")
-        }
-        val reply = suspendCancellableCoroutine<PairReply> { continuation ->
-            pairingReply = continuation
-            continuation.invokeOnCancellation { pairingReply = null }
-        }
-        observer?.invoke("pair: reply ok=${reply.ok} secret=${reply.pairingSecret?.length ?: 0}chars err=${reply.error?.code ?: "-"}")
-        if (!reply.ok) {
-            throw BridgeException(reply.error?.code ?: "internal", reply.error?.message ?: "pairing was refused")
-        }
-        reply.pairingSecret
-    }
-
-    /**
      * Decode one raw frame from the relay.
      *
-     * Relay notices are consumed here rather than by the pair logic: the `ready`
-     * frame is what supplies [relayId], which pairing cannot proceed without.
+     * The relay's own transport notices are the only frames that are not sealed;
+     * the `ready` frame carries the connection id this link records for logs.
+     * Everything else must open with the pairing secret, which is what proves the
+     * sender is the bridge this watch was configured for.
      */
     private suspend fun handleFrame(text: String) {
         val envelope = runCatching { ProtocolJson.decodeFromString<Envelope>(text) }.getOrNull() ?: return
 
-        // Transport frames are the relay's, not the bridge's, and are the only
-        // frames that are neither sealed nor a pairing reply.
+        // Transport frames are the relay's own, and the only frames that are not
+        // sealed. The `ready` frame carries the id this link records for logs.
         if (envelope.t != null && !envelope.isSealed) {
             if (envelope.t == "ready") relayId = envelope.from
-            return
-        }
-
-        // An unsealed application frame can only be a pairing reply, because
-        // every other application frame is sealed.
-        if (!envelope.isSealed) {
-            val json = runCatching { ProtocolJson.parseToJsonElement(text) as? JsonObject }.getOrNull() ?: return
-            if ((json["ch"] as? JsonPrimitive)?.contentOrNullSafe() != "res") return
-            val reply = runCatching { ProtocolJson.decodeFromJsonElement(PairReply.serializer(), json) }.getOrNull() ?: return
-            pairingReply?.let { continuation ->
-                pairingReply = null
-                continuation.resume(reply)
-            }
             return
         }
 
@@ -657,25 +528,6 @@ class BridgeLink(
     private companion object {
         /** Long enough for a slow tool-free turn, short enough to surface a dead link. */
         const val COMMAND_TIMEOUT_MS = 30_000L
-
-        /** A pairing round trip is one broadcast-free hop; five seconds is generous. */
-        const val PAIR_TIMEOUT_MS = 5_000L
-
-        /** How long to wait for the relay's ready frame before pairing gives up. */
-        const val READY_FRAME_WAIT_MS = 1_500L
-
-        /**
-         * How many times to ask for the pairing secret before giving up.
-         *
-         * Two, because the first request can arrive at the bridge before the relay
-         * has told the bridge that this watch exists, and the bridge discards a
-         * frame from a watch it has not been told about. One attempt would make a
-         * first pairing a coin toss; a second finds the bridge already primed.
-         */
-        const val PAIR_ATTEMPTS = 2
-
-        /** Between pairing attempts; long enough for the relay's notice to arrive. */
-        const val PAIR_RETRY_DELAY_MS = 700L
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             // The relay pings on its own schedule; a slightly longer read timeout

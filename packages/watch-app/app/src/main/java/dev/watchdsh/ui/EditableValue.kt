@@ -10,8 +10,8 @@ import androidx.wear.compose.material3.Card
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.Text
 
-/** Which pairing value the shared text-input launcher is currently editing. */
-enum class EditableField { None, RelayUrl, RelayToken, PairingSecret, PcId }
+/** Which connection value the shared text-input launcher is currently editing. */
+enum class EditableField { None, RelayUrl, LanRelayUrl, RelayToken, PairingSecret, PcId }
 
 /**
  * One editable value.

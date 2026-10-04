@@ -1,9 +1,9 @@
 # Run every test that does not need a watch.
 #
 # These cover the parts where a mistake is invisible or very expensive to find:
-# the sealing implementation, the discovery and pairing handshake, the full chain
-# from a simulated watch through the relay to the Harness, and the config file's
-# refresh rules. Each of them caught a real defect during development.
+# the sealing implementation, the full chain from a simulated watch through the
+# relay to the Harness, and the config file's refresh rules. Each of them caught a
+# real defect during development.
 #
 # The watch app itself is not exercised here; that needs the device.
 #
@@ -56,9 +56,9 @@ if (-not (Test-Path $tokenFile)) {
 }
 
 # The bridge is a client of the Harness and exits at once when it cannot reach it,
-# so a missing Harness surfaces as "no bridge answered the probe" - which points at
-# discovery rather than at the actual cause. Checked here so the message names the
-# real problem.
+# so a missing Harness surfaces as the suites timing out on a handshake - which
+# points at the bridge rather than at its missing dependency. Checked here so the
+# message names the real problem.
 #
 # Which port matters, and guessing 3080 is wrong whenever the Harness was launched
 # elsewhere: DSH_WEB_URL names the one actually running, and the bridge prefers that
@@ -163,7 +163,6 @@ Write-Host "testing against pc=$pcId relay=$relayUrl" -ForegroundColor Cyan
 
 $suites = @(
   @{ Name = "config refresh"; Script = "packages\dsh-bridge\test\config-refresh.mjs"; Args = @() },
-  @{ Name = "discovery + pairing"; Script = "packages\dsh-bridge\test\discovery.mjs"; Args = @() },
   @{ Name = "end to end"; Script = "packages\dsh-bridge\test\e2e.mjs"; Args = @("--relay", $relayUrl, "--pc", $pcId, "--seconds", "60") }
 )
 

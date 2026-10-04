@@ -40,16 +40,6 @@ export const ROLES = Object.freeze(['pc', 'watch']);
 
 /** Watch → bridge commands. */
 export const COMMANDS = Object.freeze({
-  /**
-   * First contact from a watch that has no pairing secret yet.
-   *
-   * This is the one command that travels unsealed, because sealing requires the
-   * very secret it asks for. Its authorization is the relay's: only a peer that
-   * presented the shared relay token can be attached to this PC at all, so a peer
-   * that got this far is already authenticated. The bridge answers with the
-   * secret, after which every other frame is sealed as usual.
-   */
-  PAIR: 'pair',
   /** Handshake: report app version and protocol expectations. */
   HELLO: 'hello',
   /** List known sessions, most recent first. */
@@ -202,25 +192,6 @@ export async function openFrameDiagnostic(secret, direction, envelope) {
     // A bad tag means the key differs or the bytes were altered in transit.
     return { error: `${error.constructor.name}: ${error.message} (secret ${String(secret.length)} chars, nonce ${String(nonce.byteLength)}B, blob ${String(blob.byteLength)}B)` };
   }
-}
-
-/**
- * Build an unsealed pairing request.
- *
- * The `pair` channel is the one exception to sealing, because a watch with no
- * secret cannot seal anything. Keeping it on its own channel makes that
- * exception explicit and impossible to confuse with an authenticated command.
- *
- * `from` must be the watch id the relay assigned in its `ready` frame: the bridge
- * resolves the reply destination from it, so a request without one is dropped.
- *
- * @param id - correlation id echoed by the response.
- * @param from - the relay-assigned watch id.
- * @param body - extra fields, currently just the app's protocol version.
- * @returns the frame to send as plain JSON.
- */
-export function pairRequest(id, from, body = {}) {
-  return { ch: 'pair', cmd: COMMANDS.PAIR, id, from, ...body };
 }
 
 /**

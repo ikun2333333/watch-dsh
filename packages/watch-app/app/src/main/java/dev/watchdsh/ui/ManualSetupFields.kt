@@ -17,21 +17,26 @@ import androidx.wear.compose.material3.Text
 import dev.watchdsh.voice.VoiceInput
 
 /**
- * The manual fallback for a remote relay.
+ * The setup form.
  *
  * Wear Material 3 ships no text field and a watch has no keyboard, so each value
- * is entered through the system input activity — the same activity dictation
- * uses. Four values is a lot of tapping, which is exactly why discovery exists
- * and why this is collapsed by default.
+ * is entered through the system input activity — the same activity dictation uses.
+ * That is a lot of tapping, which is why the intended path is importing a config
+ * over adb instead: the bridge writes the file, one `adb push` installs it, and
+ * nothing is typed. This form exists for the case where that is not convenient.
+ *
+ * The relay URL and the LAN relay URL are separate on purpose. The watch tries the
+ * local one first and falls back to the other, so filling in both is what makes it
+ * work at home and away without changing anything.
  */
 @Composable
 fun ManualSetupFields(
     state: UiState,
-    onSave: (relayUrl: String, relayToken: String, pairingSecret: String, pcId: String) -> Unit,
+    onSave: (relayUrl: String, lanRelayUrl: String, relayToken: String, pairingSecret: String, pcId: String) -> Unit,
 ) {
     val values = rememberConnectionDraft(state.settings)
 
-    // One launcher serves all four rows; the target says where the result goes.
+    // One launcher serves every row; the target says where the result goes.
     var target by rememberSaveable { mutableStateOf(EditableField.None) }
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult(),
@@ -41,6 +46,7 @@ fun ManualSetupFields(
             if (text != null) {
                 when (target) {
                     EditableField.RelayUrl -> values.relayUrl = text
+                    EditableField.LanRelayUrl -> values.lanRelayUrl = text
                     EditableField.RelayToken -> values.relayToken = text
                     EditableField.PairingSecret -> values.pairingSecret = text
                     EditableField.PcId -> values.pcId = text
@@ -61,17 +67,26 @@ fun ManualSetupFields(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         EditableValue("Relay URL", values.relayUrl, "required") { edit(EditableField.RelayUrl, "Relay URL") }
+        EditableValue("LAN Relay URL", values.lanRelayUrl, "optional") {
+            edit(EditableField.LanRelayUrl, "LAN Relay URL")
+        }
         EditableValue("Relay token", values.relayToken, "required") { edit(EditableField.RelayToken, "Relay token") }
         EditableValue("PC id", values.pcId, "required") { edit(EditableField.PcId, "PC id") }
-        // Optional: a discovered PC supplies this automatically, and a remote one
-        // hands it over during the pairing handshake.
-        EditableValue("Pairing secret", values.pairingSecret, "optional") {
+        EditableValue("Pairing secret", values.pairingSecret, "required") {
             edit(EditableField.PairingSecret, "Pairing secret")
         }
 
         Button(
-            onClick = { onSave(values.relayUrl, values.relayToken, values.pairingSecret, values.pcId) },
-            enabled = values.relayUrl.isNotBlank() && values.relayToken.isNotBlank() && values.pcId.isNotBlank(),
+            onClick = {
+                onSave(
+                    values.relayUrl,
+                    values.lanRelayUrl,
+                    values.relayToken,
+                    values.pairingSecret,
+                    values.pcId,
+                )
+            },
+            enabled = values.isComplete,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("Connect")

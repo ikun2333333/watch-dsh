@@ -18,7 +18,6 @@ import { fileURLToPath } from 'node:url';
 import { Bridge } from './bridge.mjs';
 import { readConfig, writeConfig } from './config.mjs';
 import { loadDescriptors } from './descriptors.mjs';
-import { startDiscovery } from './discovery.mjs';
 import { loadWebSocket } from './deps.mjs';
 import { openFrame, openFrameDiagnostic } from './protocol.mjs';
 
@@ -207,13 +206,15 @@ function lanAddress() {
 // this one, including a remote `wss://` URL, because that is the point of
 // exporting a remote configuration.
 //
-// `discoveryUrl` answers "where is a relay on this network" - what a broadcast
-// answered by *this* machine can usefully advertise, which is always a LAN address
-// when one exists, even while the bridge is attached to a public relay. A watch
-// that can hear a broadcast is by definition on this network, so sending it to the
-// internet wastes the LAN and makes a local connection depend on being online.
+// Two addresses go into a config, because neither is right in both places.
+//
+// `watchRelayUrl` is where this bridge is attached - the address a watch must use
+// to reach this PC from wherever it is, including a remote `wss://` URL.
+//
+// `lanRelayUrl` is this machine on the local network, which the watch tries first:
+// it is faster at home and keeps working with no internet. The watch falls back to
+// the other when it cannot be reached, so a DHCP change repairs itself.
 const watchRelayUrl = dialableRelayUrl(relayUrl);
-const discoveryUrl = lanRelayUrl() ?? watchRelayUrl;
 
 /** This machine's own relay address, or undefined when it has no LAN address. */
 function lanRelayUrl() {
@@ -246,40 +247,18 @@ const descriptors = loadDescriptors(dshHome);
 const bridge = new Bridge({ dshHome, baseUrl, pairingSecret: pairing, pcId, descriptors });
 await bridge.start();
 
-// Answer LAN discovery probes unless explicitly disabled. This is what lets a
-// watch on the same Wi-Fi pair with no typing at all.
-let discovery;
-if (args['no-discovery'] !== true) {
-  discovery = startDiscovery({
-    pcId,
-    relayUrl: discoveryUrl,
-    relayToken,
-    onProbe: (event) => {
-      if (event.kind === 'listening') {
-        console.log(`main: answering LAN discovery on udp/${String(event.port)} (${event.addresses.join(', ') || 'no LAN address'})`);
-      } else if (event.kind === 'error') {
-        console.log(`main: discovery problem: ${event.message}`);
-      } else if (event.kind === 'answered') {
-        console.log(`main: answered a discovery probe from ${event.address}`);
-      }
-    },
-  });
-}
-
-// The values the watch needs are printed once, together, in the order its
-// pairing screen asks for them. The pairing secret is listed as well so it can
-// be entered by hand if discovery is unavailable, but on a LAN the watch
-// receives it over the authenticated relay link and nothing needs typing.
+// The values the watch needs are printed once, together. There is no broadcast and
+// no pairing handshake: the config file is the only way the watch learns any of
+// this, so these are for writing that file by hand or for checking what it holds.
 console.log('');
-console.log('  -- LAN mode: open the watch app and tap "Find my PC" ------------------');
-if (discovery !== undefined) console.log(`  (discovery is answering on udp/${String(discovery.port)})`);
-console.log('');
-console.log('  -- or enter these values by hand --------------------------------------');
+console.log('  -- the watch reaches this bridge with these values ---------------------');
 console.log(`  Relay URL       ${watchRelayUrl}`);
+if (lanRelayUrl() !== undefined) console.log(`  LAN Relay URL   ${lanRelayUrl()}`);
 console.log(`  Relay token     ${relayToken}`);
 console.log(`  Pairing secret  ${pairing}`);
 console.log(`  PC id           ${pcId}`);
 console.log('  -----------------------------------------------------------------------');
+console.log(`  write them to a config with:  --write-config <path>`);
 console.log('');
 console.log(`main: harness ready at ${baseUrl} (${String(descriptors.all.length)} endpoints known)`);
 
@@ -320,19 +299,11 @@ function connect() {
         console.log('main: ignoring a non-JSON frame from the relay');
         return;
       }
-      // A pairing request cannot be sealed: sealing needs the very secret the
-      // watch is asking for. Its authorization is the relay's, which admits only
-      // peers presenting the shared relay token. It is recognised by its `ch`
-      // field, not by a `t` field, because the relay forwards the request frame
-      // verbatim. This check comes before the notice branch below, which would
-      // otherwise swallow it.
-      if (envelope?.ch === 'pair') {
-        const frame = envelope;
-        const link = socket.watchLinks.get(String(envelope.from));
-        if (link !== undefined) await link.deliver(frame);
-        else console.log(`main: pairing request from unknown watch ${String(envelope.from)}; ignoring`);
-        return;
-      }
+      // Frames reach this bridge sealed with the pairing secret, or as one of the
+      // relay's own transport notices. There is no unsealed application frame any
+      // more: the secret arrives in the watch's imported config, so a watch that
+      // does not hold it has nothing to say and is refused by the sealing check
+      // below rather than answered.
       // Transport notices are the relay's own frames, not sealed payloads.
       if (typeof envelope?.t === 'string' && envelope.t !== 'sealed') {
         if (envelope.t === 'watch-online') {
@@ -384,7 +355,6 @@ connect();
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
     console.log('\nmain: shutting down');
-    discovery?.close();
     bridge.close();
     socket?.close(1001, 'bridge shutting down');
     setTimeout(() => { process.exit(0); }, 200);

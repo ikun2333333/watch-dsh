@@ -10,10 +10,10 @@ import java.util.Locale
  * A small on-device log the PC can read back with `adb pull`.
  *
  * A release build has no readable logcat for this app, and the failures worth
- * diagnosing here — discovery finding nothing, pairing not completing, a config
- * file being rejected — all happen on the watch, where there is no console. This
- * writes a bounded, append-only file into the app's external files directory so
- * `adb pull` can fetch it.
+ * diagnosing here — a config file being rejected, a socket refused, a local
+ * address that no longer answers — all happen on the watch, where there is no
+ * console. This writes a bounded, append-only file into the app's external files
+ * directory so `adb pull` can fetch it.
  *
  * It records connection milestones only: never a token, a pairing secret, or any
  * message text.
