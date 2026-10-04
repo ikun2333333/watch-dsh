@@ -14,6 +14,12 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Needed to receive discovery replies. Android's Wi-Fi stack drops broadcast
+         and multicast traffic unless a MulticastLock is held, so without this the
+         probe goes out and the answer never reaches the socket: the scan looks
+         like it did nothing at all. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
     <!-- No RECORD_AUDIO: voice input goes through the system input activity, which
          transcribes in the platform's own process, so this app never opens the
          microphone. No POST_NOTIFICATIONS either, because the app posts no

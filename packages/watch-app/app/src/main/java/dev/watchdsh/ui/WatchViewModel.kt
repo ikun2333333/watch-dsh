@@ -198,12 +198,32 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     return@launch
                 }
-                val found = Discovery.findBridges()
+                // The address this watch last connected to is probed by unicast as
+                // well as broadcast. On a router that drops traffic between
+                // wireless clients, broadcast never arrives while unicast does, so
+                // without this the app could not rediscover a PC it had already
+                // used - which is exactly the symptom that led here.
+                val remembered = _state.value.settings.relayUrl
+                    .removePrefix("ws://").removePrefix("wss://")
+                    .substringBefore('/').substringBefore(':')
+                    .takeIf { it.isNotBlank() }
+                val found = Discovery.findBridges(
+                    context = getApplication(),
+                    knownHosts = listOfNotNull(remembered),
+                )
                 _state.update {
                     it.copy(
                         scanning = false,
                         discovered = found,
-                        lastError = if (found.isEmpty()) "No PC answered. Is the bridge running on the same Wi-Fi?" else null,
+                        // Discovery can legitimately fail while manual entry still
+                        // works - a router that drops broadcasts, or a watch on a
+                        // different band - so the fallback is named here rather
+                        // than leaving the user with only a failure.
+                        lastError = if (found.isEmpty()) {
+                            "No PC answered. Check both are on the same Wi-Fi, or enter the address below."
+                        } else {
+                            null
+                        },
                     )
                 }
             } catch (error: Exception) {
