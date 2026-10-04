@@ -111,9 +111,13 @@ $wranglerRoot = Split-Path (Split-Path (Split-Path $localWrangler -Parent) -Pare
 
 function Invoke-Wrangler {
   param([string[]] $Arguments, [switch] $AllowFailure)
-  # Run from the layer wrangler was installed into, which is where wrangler.toml is
-  # found relative to as well.
-  $result = Invoke-Tool $node (@($localWrangler) + $Arguments) $bridgeDir
+  # resolve-public.mjs is preloaded because the router on some networks answers
+  # api.cloudflare.com with addresses that are not Cloudflare's, and wrangler's API
+  # calls then time out while dash.cloudflare.com works - a confusing split that
+  # looks like a broken login rather than a DNS problem. The preload is harmless
+  # where DNS is already correct.
+  $preload = "file:///" + ($Root -replace '\\', '/') + "/tools/resolve-public.mjs"
+  $result = Invoke-Tool $node (@("--import", $preload, $localWrangler) + $Arguments) $bridgeDir
   if (-not $AllowFailure -and $result.Code -ne 0) {
     throw "wrangler $($Arguments -join ' ') failed (exit $($result.Code)):`n$($result.Output | Out-String)"
   }
@@ -144,14 +148,25 @@ if (-not $signedIn) {
 }
 Write-Note ($whoami.Output | Select-Object -First 3 | Out-String).Trim()
 
-# --- 4. the shared token becomes a Worker secret -------------------------------
+# --- 4. deploy, then set the shared token as a secret --------------------------
+# The order matters. `wrangler secret put` asks interactively whether to create the
+# Worker when it does not exist yet, and a piped answer is unreliable under the
+# preload, so deploying first means the Worker already exists and the question is
+# never asked.
+Write-Step "deploying the Worker"
+$deploy = Invoke-Wrangler @("deploy")
+$deployText = ($deploy.Output | Out-String)
+$deploy.Output | Where-Object { $_ -match "workers.dev|Deployed|Uploaded|https://" } | ForEach-Object { Write-Note "$_" }
+
 Write-Step "setting the RELAY_TOKEN secret"
-# `--stdin` reads the value from the pipe, which keeps the token out of the command
-# line and therefore out of any process listing.
+# The value is piped in rather than passed as an argument, which keeps the token
+# out of the command line and therefore out of any process listing. wrangler reads
+# it from stdin directly - there is no --stdin flag.
+$preload = "file:///" + ($Root -replace '\\', '/') + "/tools/resolve-public.mjs"
 $previous = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 try {
-  $secretOutput = ($token | & $node $localWrangler secret put RELAY_TOKEN --stdin 2>&1 | Out-String)
+  $secretOutput = ($token | & $node --import $preload $localWrangler secret put RELAY_TOKEN 2>&1 | Out-String)
   $secretCode = $LASTEXITCODE
 } finally {
   $ErrorActionPreference = $previous
@@ -167,8 +182,11 @@ if ($secretCode -ne 0) {
 }
 Write-Note $secretOutput.Trim()
 
-# --- 5. deploy ------------------------------------------------------------------
-Write-Step "deploying the Worker"
+# --- 5. deploy again so the secret is bound to this version ---------------------
+# A secret set before the Worker has ever been deployed is stored but not attached
+# to a script version, so the running Worker would see an empty RELAY_TOKEN and
+# reject every connection. Deploying once more makes the binding certain.
+Write-Step "redeploying so the secret is bound"
 $deploy = Invoke-Wrangler @("deploy")
 $deployText = ($deploy.Output | Out-String)
 $deploy.Output | Where-Object { $_ -match "workers.dev|Deployed|Uploaded|https://" } | ForEach-Object { Write-Note "$_" }
