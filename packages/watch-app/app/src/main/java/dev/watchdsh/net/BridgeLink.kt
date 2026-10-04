@@ -289,8 +289,32 @@ class BridgeLink(
                     val armed = !this@BridgeLink.config?.pairingSecret.isNullOrBlank()
                     observer?.invoke("onOpen: armedWithSecret=$armed")
                     if (!armed) {
-                        runCatching { adoptPairingSecret() }
-                            .onFailure { observer?.invoke("onOpen: pairing threw ${it.message}") }
+                        // Retried, because the first request can be dropped.
+                        //
+                        // The relay tells the bridge about a new watch in a separate
+                        // frame from the `ready` frame the watch gets, and the bridge
+                        // discards a frame from a watch it has not been told about
+                        // yet. A watch that asks immediately can therefore be
+                        // ignored through no fault of either side, and a single
+                        // attempt would leave it unpaired until something happened to
+                        // reconnect it.
+                        //
+                        // The second attempt needs no special timing: by the time the
+                        // first has failed the notice has arrived, so the retry
+                        // succeeds. Asking twice is what makes the outcome
+                        // independent of which frame won the race.
+                        var secret: String? = null
+                        var round = 0
+                        while (secret == null && round < PAIR_ATTEMPTS) {
+                            secret = runCatching { adoptPairingSecret() }
+                                .onFailure { observer?.invoke("onOpen: pairing threw ${it.message}") }
+                                .getOrNull()
+                            round += 1
+                            if (secret == null && round < PAIR_ATTEMPTS) {
+                                observer?.invoke("onOpen: no pairing answer yet, asking again")
+                                delay(PAIR_RETRY_DELAY_MS)
+                            }
+                        }
                     }
                     runCatching { handshake() }
                         .onFailure { observer?.invoke("onOpen: handshake threw ${it.message}") }
@@ -639,6 +663,19 @@ class BridgeLink(
 
         /** How long to wait for the relay's ready frame before pairing gives up. */
         const val READY_FRAME_WAIT_MS = 1_500L
+
+        /**
+         * How many times to ask for the pairing secret before giving up.
+         *
+         * Two, because the first request can arrive at the bridge before the relay
+         * has told the bridge that this watch exists, and the bridge discards a
+         * frame from a watch it has not been told about. One attempt would make a
+         * first pairing a coin toss; a second finds the bridge already primed.
+         */
+        const val PAIR_ATTEMPTS = 2
+
+        /** Between pairing attempts; long enough for the relay's notice to arrive. */
+        const val PAIR_RETRY_DELAY_MS = 700L
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             // The relay pings on its own schedule; a slightly longer read timeout
