@@ -49,6 +49,23 @@
 
 import { PC_ROLE, RelayCore, WATCH_ROLE } from './relay-core.mjs';
 
+/**
+ * Sockets that have already been joined to the core.
+ *
+ * The in-process relay identifies a peer by object identity, which works there
+ * because one process owns every socket for its whole life. A Durable Object does
+ * not: it can be evicted between events and rebuilt, so the same attachment comes
+ * back as a different object. Identity comparison then reports a peer that is
+ * already attached as a *new* connection, and `join` treats the incumbent as
+ * stale - closing the live bridge with "replaced by a newer connection" and
+ * re-adding watches on every frame.
+ *
+ * This set answers "is this socket already accounted for" in a way that survives
+ * a rebuild. It lives at module scope so it is not tied to one object instance,
+ * and holds sockets weakly so an evicted one is collectable.
+ */
+const joined = new WeakSet();
+
 /** Bytes-correct token check. */
 function tokenMatches(candidate, expected) {
   if (typeof candidate !== 'string' || typeof expected !== 'string') return false;
@@ -70,7 +87,16 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/healthz') {
-      return Response.json({ ok: true, protocol: 1 });
+      // The version is reported so a deploy can be confirmed rather than assumed.
+      // Without it, "did the new code go live yet" is unanswerable and every test
+      // after a deploy is ambiguous: a failure could mean the fix is wrong or
+      // simply that the old version is still serving.
+      return Response.json({
+        ok: true,
+        protocol: 1,
+        version: env.CF_VERSION_METADATA?.id ?? null,
+        tag: env.CF_VERSION_METADATA?.tag ?? null,
+      });
     }
 
     const role = url.pathname === '/pc' ? PC_ROLE : url.pathname === '/watch' ? WATCH_ROLE : undefined;
@@ -125,21 +151,42 @@ export class RelayRoom {
     const role = url.pathname === '/pc' ? PC_ROLE : WATCH_ROLE;
     const pcId = url.searchParams.get('pc') ?? '';
 
+    // Rebuild the peer set before deciding who is online.
+    //
+    // RelayCore lives in memory, and a hibernated object is rebuilt empty on the
+    // next event. Without this, a fetch that woke the object saw no bridge, so a
+    // joining watch computed pcOnline=false and was sent no watch-online notice -
+    // and the bridge then dropped every frame from a watch it had never been told
+    // about. Messages still flowed, because webSocketMessage rehydrates first,
+    // which is what made this look like a forwarding bug rather than a rebuild
+    // one.
+    this.#rehydrate();
+
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
+
+    // Tags are passed TO acceptWebSocket; there is no setTag method on
+    // DurableObjectState. Calling one that does not exist threw during `fetch`,
+    // which the platform reports as a bare 500 - and only on /watch, because /pc
+    // never tagged, so the bridge kept working and hid the cause.
+    const watchId = role === WATCH_ROLE ? this.#core.newWatchId() : undefined;
+
+    // The role and pc id have to survive hibernation too. RelayCore is in-memory
+    // only, so on a wake-up it is rebuilt empty and can only rediscover its peers
+    // from what each socket carries - and this is the only place that is written.
+    // Without it, rehydration skipped every socket and a hibernated relay silently
+    // stopped delivering frames.
+    server.serializeAttachment({ role, pcId });
 
     // Hibernation is what keeps an idle bridge connection affordable: the socket
     // is not held in memory between messages, and `webSocketMessage` runs only
     // when a frame arrives.
-    this.#state.acceptWebSocket(server);
-
-    // The watch id lives in the socket's tag, which the platform persists across
-    // hibernation. Attachment state is per-socket too, but a tag is also
-    // readable without the socket, so rehydration can rebuild an identical id.
-    const watchId = role === WATCH_ROLE ? this.#core.newWatchId() : undefined;
-    if (watchId !== undefined) this.#state.setTag(server, 'watchId', watchId);
+    this.#state.acceptWebSocket(server, watchId === undefined ? [] : [`watchId:${watchId}`]);
 
     const peer = this.#peerFor(server);
+    // Marked before joining so a later rehydrate in this same instance cannot
+    // mistake this socket for a peer that has yet to be adopted.
+    joined.add(server);
     const { pcOnline, notices } = this.#core.join(peer, role, pcId, watchId);
 
     server.send(JSON.stringify({
@@ -152,6 +199,18 @@ export class RelayRoom {
     for (const notice of notices) this.#send(notice.peer, notice.text);
 
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /**
+   * The watch id a socket was tagged with, or undefined for a bridge socket.
+   *
+   * Tags are plain strings, so the id is the part after the prefix. Reading a
+   * property that was never written would silently yield undefined and make every
+   * rehydrated socket look like a bridge.
+   */
+  #watchIdOf(socket) {
+    const tag = this.#state.getTags(socket).find((entry) => entry.startsWith('watchId:'));
+    return tag === undefined ? undefined : tag.slice('watchId:'.length);
   }
 
   /** Wrap a Cloudflare WebSocket in the small transport surface the core needs. */
@@ -190,7 +249,12 @@ export class RelayRoom {
     for (const socket of this.#state.getWebSockets()) {
       const attachment = socket.deserializeAttachment() ?? {};
       if (attachment.pcId === undefined || attachment.role === undefined) continue;
-      const watchId = this.#state.getTags(socket).watchId;
+      // Already rejoined, in this instance or a previous one. Joining again would
+      // rebuild per-watch state on every frame and, for the bridge, would look
+      // like a second connection taking over its own slot.
+      if (joined.has(socket)) continue;
+      const watchId = this.#watchIdOf(socket);
+      joined.add(socket);
       this.#core.join(this.#peerFor(socket), attachment.role, attachment.pcId, watchId);
     }
   }
@@ -203,7 +267,7 @@ export class RelayRoom {
     const attachment = socket.deserializeAttachment() ?? {};
     const { role, pcId } = attachment;
     if (role === undefined || pcId === undefined) return;
-    const watchId = this.#state.getTags(socket).watchId;
+    const watchId = this.#watchIdOf(socket);
     const text = typeof message === 'string' ? message : new TextDecoder().decode(message);
     const peer = this.#peerFor(socket);
     for (const frame of this.#core.route(peer, role, pcId, watchId, text)) {
@@ -216,7 +280,7 @@ export class RelayRoom {
     const attachment = socket.deserializeAttachment() ?? {};
     const { role, pcId } = attachment;
     if (role === undefined || pcId === undefined) return;
-    const watchId = this.#state.getTags(socket).watchId;
+    const watchId = this.#watchIdOf(socket);
     const peer = this.#peerFor(socket);
     for (const notice of this.#core.leave(peer, role, pcId, watchId)) {
       this.#send(notice.peer, notice.text);

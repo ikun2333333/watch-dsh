@@ -274,6 +274,51 @@ You need a free Cloudflare account first: <https://dash.cloudflare.com/sign-up> 
 password; no domain and no payment method). The free tier covers Durable Objects and WebSocket
 Hibernation, and this use is nowhere near its request limit.
 
+### Use a custom domain, not the workers.dev one
+
+**A `*.workers.dev` address is blocked by some ISPs**, and the block is on the hostname rather than
+on Cloudflare: measured on one network, TLS to `servername=cloudflare.com` succeeded against the
+same Cloudflare IPs while `servername=workers.dev` was reset every time, and `pages.dev` was fine.
+Nothing in the relay can work around that, because the block happens before any of it runs.
+
+Attach a domain you control instead:
+
+1. Add the domain to Cloudflare (free plan) and point its nameservers at the pair Cloudflare gives
+   you. The zone must be on the same account as the Worker, because a Worker custom domain needs
+   Cloudflare to hold the DNS record and the certificate.
+2. Wait for the zone to become `active`.
+3. Bind the Worker to it — either `wrangler deploy` with a `routes` entry, or the API:
+
+```powershell
+# PUT /accounts/<account-id>/workers/domains
+#   { "zone_id": …, "hostname": "…", "service": "watch-dsh-relay", "environment": "production" }
+```
+
+`tools/cf-status.mjs` reports the zones and custom-domain bindings on the account, which is how
+you tell whether step 1 is done before spending time on step 3:
+
+```powershell
+node --import "file:///…/tools/resolve-public.mjs" tools\cf-status.mjs <account-id>
+```
+
+Then point the bridge and the watch at `wss://<your-domain>` and check it from outside:
+
+```powershell
+node packages\dsh-bridge\src\main.mjs --relay wss://<your-domain> `
+    --token-file .state\relay-token --state .state
+```
+
+### If the API hostname resolves to a wrong address
+
+Some networks answer `api.cloudflare.com` with addresses that are not Cloudflare's, so wrangler
+times out while `dash.cloudflare.com` works — which reads as a broken login rather than a DNS
+problem. `tools/resolve-public.mjs` replaces `dns.lookup` for one process and is preloaded by the
+deploy script, so no administrator rights and no system DNS change are needed.
+
+Note that `dns.setServers()` alone does **not** fix this: it changes `dns.resolve*` but not
+`dns.lookup`, and `fetch` goes through `lookup`.
+
+
 By hand, if you prefer:
 
 ```powershell
