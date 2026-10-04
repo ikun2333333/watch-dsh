@@ -9,6 +9,18 @@
  *
  * If this passes, a watch on the same Wi-Fi pairs with no typed input at all.
  *
+ * This talks to whatever bridge is already on the LAN, so two conditions make it
+ * report failures that are not code defects:
+ *
+ *   - A bridge pointed at a remote relay advertises a `wss://` URL, so steps 2
+ *     and 3 exercise that relay instead of the local one.
+ *   - The relay keeps one watch per pc id, so a real watch attached to the same
+ *     bridge takes the slot and pushes this test's simulated watch out mid
+ *     handshake.
+ *
+ * Stop the bridge, or disconnect the watch, before reading a failure here as
+ * meaningful. The end-to-end suite is immune to both because it uses its own pc id.
+ *
  * Usage: node test/discovery.mjs
  */
 
