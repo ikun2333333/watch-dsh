@@ -152,6 +152,15 @@ class BridgeLink(
     private var closing = false
 
     /**
+     * Addresses still to try, in order, when the current one cannot be reached.
+     *
+     * A watch may know both a local and a public address for the same PC. Only the
+     * local one works at home and only the public one works away, and this is how
+     * the fallback happens without asking the user or needing a mode flag.
+     */
+    private var fallbacks: List<String> = emptyList()
+
+    /**
      * The id the relay assigned this connection, learned from its `ready` frame.
      *
      * Pairing needs it: the bridge resolves where to send the pairing answer from
@@ -209,15 +218,40 @@ class BridgeLink(
 
     /**
      * Point the link at a bridge and keep it connected.
-     * Calling this again replaces the previous target.
+     *
+     * @param fallbacks - further addresses to try if this one cannot be reached.
+     *   A watch may know both a local and a public address for the same PC, and
+     *   only one of them works depending on where the watch is. Trying them in
+     *   order means a stale address costs one failed attempt instead of a stuck
+     *   connection.
      */
-    fun connect(config: ConnectionConfig) {
+    fun connect(config: ConnectionConfig, fallbacks: List<String> = emptyList()) {
         disconnect()
         this.config = config
+        this.fallbacks = fallbacks
         this.closing = false
         this.attempt = 0
         sealKeys.clear()
         openSocket()
+    }
+
+    /**
+     * Move to the next candidate address after this one proved unreachable.
+     *
+     * @returns true when there was one to move to.
+     */
+    private fun advance(): Boolean {
+        val next = fallbacks.firstOrNull() ?: return false
+        fallbacks = fallbacks.drop(1)
+        val current = config ?: return false
+        config = current.copy(url = next)
+        // A different address is a fresh start: the backoff earned by the address
+        // that failed should not delay the one that may work.
+        attempt = 0
+        sealKeys.clear()
+        observer?.invoke("falling back to the next address")
+        openSocket()
+        return true
     }
 
     /** Stop reconnecting and close the socket. */
@@ -279,6 +313,11 @@ class BridgeLink(
                     else -> LinkState.Disconnected
                 }
                 failAllPending(t.message ?: "connection failed")
+                // An address that could not be reached says nothing about the next
+                // one, so another is tried immediately rather than after a backoff.
+                // A response, by contrast, means the address works and the failure
+                // is elsewhere: falling back would only hide it.
+                if (response == null && !closing && advance()) return
                 scheduleReconnect()
             }
 

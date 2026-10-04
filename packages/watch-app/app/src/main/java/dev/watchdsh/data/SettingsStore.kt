@@ -16,6 +16,16 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 /** Persisted connection settings. */
 data class Settings(
     val relayUrl: String = "",
+    /**
+     * This PC's address on the local network, when one is known.
+     *
+     * Kept alongside [relayUrl] because neither address works in both places: at
+     * home the local one is faster and works with no internet, and away only the
+     * public one is reachable. The watch tries the local one first and falls back,
+     * which needs no user choice and no mode flag that could disagree with the
+     * addresses actually stored.
+     */
+    val lanRelayUrl: String = "",
     val relayToken: String = "",
     val pairingSecret: String = "",
     val pcId: String = "",
@@ -31,9 +41,20 @@ data class Settings(
     val isConfigured: Boolean
         get() = relayUrl.isNotBlank() && relayToken.isNotBlank() && pcId.isNotBlank()
 
-    /** Convert to the network layer's configuration. */
-    fun toConnectionConfig() = ConnectionConfig(
-        url = relayUrl,
+    /**
+     * Addresses to try, in order, skipping blanks and duplicates.
+     *
+     * The local address leads because it is the one that works with no internet,
+     * and a stale one costs only a failed attempt before the public address is
+     * tried. This is why a DHCP change does not need any action: the local attempt
+     * fails, the public one succeeds, and nothing has to notice or repair it.
+     */
+    val candidates: List<String>
+        get() = listOf(lanRelayUrl.trim(), relayUrl.trim()).filter { it.isNotEmpty() }.distinct()
+
+    /** Convert to the network layer's configuration for one address. */
+    fun toConnectionConfig(url: String = relayUrl) = ConnectionConfig(
+        url = url,
         token = relayToken,
         pairingSecret = pairingSecret,
         pcId = pcId,
@@ -50,6 +71,7 @@ data class Settings(
 class SettingsStore(private val context: Context) {
     private object Keys {
         val RELAY_URL = stringPreferencesKey("relay_url")
+        val LAN_RELAY_URL = stringPreferencesKey("lan_relay_url")
         val RELAY_TOKEN = stringPreferencesKey("relay_token")
         val PAIRING_SECRET = stringPreferencesKey("pairing_secret")
         val PC_ID = stringPreferencesKey("pc_id")
@@ -60,6 +82,7 @@ class SettingsStore(private val context: Context) {
     val settings: Flow<Settings> = context.dataStore.data.map { preferences ->
         Settings(
             relayUrl = preferences[Keys.RELAY_URL].orEmpty(),
+            lanRelayUrl = preferences[Keys.LAN_RELAY_URL].orEmpty(),
             relayToken = preferences[Keys.RELAY_TOKEN].orEmpty(),
             pairingSecret = preferences[Keys.PAIRING_SECRET].orEmpty(),
             pcId = preferences[Keys.PC_ID].orEmpty(),
@@ -68,9 +91,17 @@ class SettingsStore(private val context: Context) {
     }
 
     /** Replace the whole connection configuration, as the setup screen does. */
-    suspend fun saveConnection(relayUrl: String, relayToken: String, pairingSecret: String, pcId: String) {
+    suspend fun saveConnection(
+        relayUrl: String,
+        relayToken: String,
+        pairingSecret: String,
+        pcId: String,
+        lanRelayUrl: String = "",
+    ) {
         context.dataStore.edit { preferences ->
             preferences[Keys.RELAY_URL] = relayUrl.trim()
+            if (lanRelayUrl.isBlank()) preferences.remove(Keys.LAN_RELAY_URL)
+            else preferences[Keys.LAN_RELAY_URL] = lanRelayUrl.trim()
             preferences[Keys.RELAY_TOKEN] = relayToken.trim()
             preferences[Keys.PAIRING_SECRET] = pairingSecret.trim()
             preferences[Keys.PC_ID] = pcId.trim()

@@ -9,9 +9,13 @@ import java.io.File
  * A portable description of how to reach one bridge, written by
  * `tools`-side `--write-config` and pushed to the watch.
  *
- * Discovery covers the LAN case, where nothing needs typing. A relay on the
- * internet has nothing to discover, so this file is how a remote setup avoids
- * the watch keyboard: the bridge writes it, and one `adb push` imports it.
+ * A relay on the internet has nothing to discover, so this file is how a remote
+ * setup avoids the watch keyboard: the bridge writes it, and one `adb push`
+ * imports it.
+ *
+ * It may carry two addresses because neither is right in both places: `relayUrl`
+ * is where the bridge is attached (a public relay, for use away from home) and
+ * `lanRelayUrl` is this PC on the local network. See `Settings.lanRelayUrl`.
  *
  * See `packages/dsh-bridge/src/config.mjs` for the format's other half.
  */
@@ -21,6 +25,7 @@ private data class WatchConfig(
     val v: Int = 0,
     val pcId: String = "",
     val relayUrl: String = "",
+    val lanRelayUrl: String? = null,
     val relayToken: String = "",
     val pairingSecret: String = "",
 )
@@ -62,6 +67,7 @@ object ConfigFile {
         if (parsed.relayUrl.isBlank() || parsed.relayToken.isBlank() || parsed.pcId.isBlank()) return null
         return Settings(
             relayUrl = parsed.relayUrl.trim(),
+            lanRelayUrl = parsed.lanRelayUrl?.trim().orEmpty(),
             relayToken = parsed.relayToken.trim(),
             pairingSecret = parsed.pairingSecret.trim(),
             pcId = parsed.pcId.trim(),

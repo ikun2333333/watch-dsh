@@ -206,7 +206,16 @@ function lanRelayUrl() {
 // when someone is preparing a remote setup.
 if (args['write-config'] !== undefined) {
   const target = args['write-config'] === true ? configPath : String(args['write-config']);
-  writeConfig(target, { relayUrl: watchRelayUrl, relayToken, pairingSecret: pairing, pcId });
+  // Both addresses go in, so the watch can use the local one at home and the
+  // public one away without being re-paired and without needing a broadcast to
+  // tell it which is which.
+  writeConfig(target, {
+    relayUrl: watchRelayUrl,
+    lanRelayUrl: lanRelayUrl(),
+    relayToken,
+    pairingSecret: pairing,
+    pcId,
+  });
   console.log(`main: wrote a watch config to ${target}`);
   console.log('main: import it on the watch with:');
   console.log(`  adb push "${target}" /sdcard/Android/data/dev.watchdsh/files/watch-config.json`);

@@ -27,15 +27,31 @@ const MAGIC = 'watch-dsh-config';
 
 /**
  * Build a config object.
- * @param values - the four values plus the format marker.
+ *
+ * A config may carry two relay addresses, and the reason is that neither is right
+ * in both places. `relayUrl` is where the bridge is attached - a public relay for
+ * the away-from-home setup. `lanRelayUrl` is this machine's own address on the
+ * local network, which is faster at home and keeps working with no internet.
+ *
+ * The watch tries the local one first and falls back to the public one. That is
+ * deliberately not decided by a broadcast: a broadcast only reaches the local
+ * network, which would make it a natural way to detect "at home", but plenty of
+ * routers drop traffic between wireless clients, and this project has measured one
+ * that does. A fallback that depends on a packet the network may discard is a
+ * fallback that silently does not happen.
+ *
+ * @param values - the connection values plus the format marker.
  * @returns the config, ready to serialize.
  */
-export function buildConfig({ relayUrl, relayToken, pairingSecret, pcId }) {
+export function buildConfig({ relayUrl, lanRelayUrl, relayToken, pairingSecret, pcId }) {
   return {
     dsh: MAGIC,
     v: CONFIG_VERSION,
     pcId,
     relayUrl,
+    // Omitted rather than null when there is no local address, so a config written
+    // on a machine with no LAN does not claim one.
+    ...(lanRelayUrl === undefined ? {} : { lanRelayUrl }),
     relayToken,
     pairingSecret,
   };
@@ -84,6 +100,9 @@ export function readConfig(path) {
   return {
     pcId: String(parsed.pcId ?? ''),
     relayUrl: String(parsed.relayUrl ?? ''),
+    // Absent in a config written by an earlier build, and absent is meaningful, so
+    // it is left undefined rather than becoming the empty string.
+    lanRelayUrl: typeof parsed.lanRelayUrl === 'string' ? parsed.lanRelayUrl : undefined,
     relayToken: String(parsed.relayToken ?? ''),
     pairingSecret: String(parsed.pairingSecret ?? ''),
   };
