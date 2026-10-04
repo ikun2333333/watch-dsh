@@ -55,6 +55,28 @@ if (-not (Test-Path $tokenFile)) {
   Set-Content -Path $tokenFile -Value $token -NoNewline
 }
 
+# The bridge is a client of the Harness and exits at once when it cannot reach it,
+# so a missing Harness surfaces as "no bridge answered the probe" - which points at
+# discovery rather than at the actual cause. Checked here so the message names the
+# real problem.
+$dshPort = 3080
+if (-not (Test-Port $dshPort)) {
+  $dshEntry = "C:\Users\q1375\AppData\Local\Programs\node-v24.19.0-win-x64\node_modules\@deepseek-ai\dsh\lib\bin.js"
+  if (Test-Path $dshEntry) {
+    Write-Host "starting the Harness on $dshPort (the bridge needs it) ..." -ForegroundColor Green
+    Start-Process -FilePath $node -WindowStyle Hidden `
+      -ArgumentList @($dshEntry, "web", "--port", "$dshPort", "--no-open") `
+      -RedirectStandardOutput (Join-Path $logDir "dsh.log") -RedirectStandardError (Join-Path $logDir "dsh.err")
+    Start-Sleep -Seconds 12
+  }
+  if (-not (Test-Port $dshPort)) {
+    Write-Host ""
+    Write-Host "The Harness is not serving on $dshPort, and the bridge cannot run without it." -ForegroundColor Red
+    Get-Content (Join-Path $logDir "dsh.err") -ErrorAction SilentlyContinue | Select-Object -First 8 | ForEach-Object { Write-Host "    $_" }
+    throw "start the Harness first: dsh web --port $dshPort --no-open"
+  }
+}
+
 # A listening port is not enough to conclude the local relay is usable: a bridge
 # may be attached to a *remote* relay (the away-from-home setup), in which case the
 # local relay has no bridge on it and every suite times out waiting for hello. That
