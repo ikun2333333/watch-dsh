@@ -233,10 +233,10 @@ node packages\dsh-bridge\src\main.mjs --relay ws://192.168.1.50:8787 `
 .\tools\build-watch.ps1                # -> packages\watch-app\app\build\outputs\apk\debug\app-debug.apk
 ```
 
-**Install the debug APK for LAN mode.** Android blocks cleartext traffic by default, and a
-LAN relay has no TLS in front of it, so only the debug variant permits the `ws://` URL —
-a release APK requires `wss://`. That split is deliberate: see
-[Debug-only cleartext](#debug-only-cleartext).
+**Install the release APK.** It is 2.5 MiB against 39 MiB for debug, and it starts in about
+1.3 s against 4.6 s, because R8 shrinks and optimises it. Both variants permit `ws://`, so
+the release build works for LAN mode as well as `wss://` for remote mode — see
+[Cleartext on the LAN](#cleartext-on-the-lan) for why that is not a split any more.
 
 Install on the watch. Enable developer options and wireless debugging on the watch
 (Settings → About watch → Software → tap Software version 5 times), then pair and install:
@@ -257,12 +257,29 @@ The watch offers dictation, so you can also speak them. Then tap **Connect**.
 
 A watch on mobile data and a PC behind NAT cannot reach each other directly, and this machine has
 no server to relay through. The fix is a free Cloudflare Worker, which is the one always-on public
-endpoint that needs neither a credit card nor a host to administer:
+endpoint that needs neither a credit card nor a host to administer. Both sides then dial *out* to
+it, which is why no port forwarding and no static IP are involved.
+
+```powershell
+.\tools\deploy-relay.ps1
+```
+
+That script installs wrangler locally, sets the shared token as a Worker secret, deploys, checks
+the deployed relay answers, and writes a watch config pointing at it. **One step is yours:** the
+first run stops and asks you to run `wrangler login`, because that opens a browser and needs your
+approval — it cannot be automated, and the script says so rather than failing obscurely. Approve
+it, run the script again, and it finishes.
+
+You need a free Cloudflare account first: <https://dash.cloudflare.com/sign-up> (email and
+password; no domain and no payment method). The free tier covers Durable Objects and WebSocket
+Hibernation, and this use is nowhere near its request limit.
+
+By hand, if you prefer:
 
 ```powershell
 cd packages\dsh-bridge
-npx wrangler secret put RELAY_TOKEN     # paste the same token as .state\relay-token
-npx wrangler deploy
+node ..\..\node_modules\wrangler\bin\wrangler.js secret put RELAY_TOKEN   # paste .state\relay-token
+node ..\..\node_modules\wrangler\bin\wrangler.js deploy
 ```
 
 `wrangler.toml` is already configured. Then restart the bridge pointed at the deployed Worker:
@@ -270,10 +287,16 @@ npx wrangler deploy
 ```powershell
 node packages\dsh-bridge\src\main.mjs `
     --relay wss://watch-dsh-relay.<your-subdomain>.workers.dev `
-    --token-file ..\..\.state\relay-token --state ..\..\.state
+    --token-file .state\relay-token --state .state
 ```
 
-and enter that `wss://` URL as the watch's **Relay URL**.
+and enter that `wss://` URL as the watch's **Relay URL**. The relay token and pairing secret are
+unchanged, so the watch does not need re-pairing — only the address moves.
+
+The Worker routes opaque frames and cannot read them: prompts, replies, transcripts, and approvals
+are sealed end to end under the pairing secret, which never reaches it. What it does see is each
+connection's pc id and the shared token, so treat the Worker's URL plus that token as the thing to
+protect.
 
 Notes on the free tier: Durable Objects and WebSocket Hibernation are both on the free plan, and
 incoming WebSocket messages bill at a 20:1 ratio with protocol pings free, so an always-attached
@@ -330,39 +353,32 @@ node packages\dsh-bridge\src\sample.mjs    # dump real session frames
 node packages\dsh-bridge\src\catalog.mjs   # every Remote endpoint this Harness mounts
 ```
 
-## Debug-only cleartext
+## Cleartext on the LAN
 
-Android refuses cleartext traffic by default, which would reject the `ws://` URL that LAN
-mode needs: a relay on a local address has no TLS terminator in front of it. The app therefore
-splits the policy by build variant:
+Android refuses cleartext traffic by default, which would reject the `ws://` URL that LAN mode
+needs: a relay on a local address has no TLS terminator in front of it. The app therefore permits
+cleartext in **every** build variant, from `app/src/main/res/xml/network_security_config.xml`.
 
-| Variant | Cleartext | Use |
-|---|---|---|
-| `debug` | permitted | LAN mode, and the only variant that can reach `ws://` |
-| `release` | blocked | remote mode, which must use `wss://` |
+That is a deliberate reversal of an earlier design that allowed it in `debug` only. The split
+sounded safer but made the build worth installing — the release one, at 2.5 MiB and a 1.3 s start
+— unable to reach a LAN relay at all, while LAN mode is the mode that needs no Cloudflare account
+and therefore the one most people will use. A build that cannot do the common thing is not a safer
+build.
 
-The debug policy lives in `app/src/debug/` alone, so a release build cannot inherit it. This is
-verifiable rather than asserted:
-
-```powershell
-Select-String -Path packages\watch-app\app\build\intermediates\merged_manifest*\*\*\AndroidManifest.xml `
-              -Pattern networkSecurityConfig
-```
-
-Only the debug merged manifest matches.
-
-What cleartext does and does not expose on your LAN:
+What cleartext does and does not expose:
 
 - **Not exposed:** prompts, replies, transcripts, and approval decisions. Those are sealed end to
   end with AES-256-GCM under the pairing secret, which the relay never sees, so a LAN observer
   gets ciphertext whether the transport is `ws://` or `wss://`.
 - **Exposed:** the relay token travels in the connection URL, so anyone capturing LAN traffic
-  could read it and impersonate the watch to the relay.
+  could read it and impersonate *a* watch to the relay. They still could not read a conversation:
+  that needs the pairing secret, which is delivered only over an authenticated connection and
+  never appears in a URL.
 
-That second point is acceptable on your own network but is exactly why the permission is scoped to
-debug builds. If you would rather not have the token on the wire at all in LAN mode, treat the
-relay token as disposable: rotate it with `tools\gen-secret.mjs token` and re-enter it on the watch
-after a LAN session, or run the remote (TLS) mode instead.
+Remote mode uses `wss://`, so the token is inside TLS there. On a LAN the token is only as private
+as the Wi-Fi, which is the same assumption you already make for anything else on it. If you would
+rather not have it on the wire at all, rotate it with `tools\gen-secret.mjs token` after a session
+on an untrusted network, or use remote mode.
 
 ## Environment notes
 
