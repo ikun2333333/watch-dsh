@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.items
@@ -27,6 +28,15 @@ import androidx.wear.compose.material3.ScreenScaffold
 import androidx.wear.compose.material3.Text
 import dev.watchdsh.net.LinkState
 import dev.watchdsh.voice.VoiceInput
+
+/**
+ * How many lines of one message to lay out.
+ *
+ * Generous enough that a normal reply is shown whole on a watch, and low enough
+ * that one enormous message cannot dominate the frame. The full text is on the
+ * PC, so truncating the view is not losing anything.
+ */
+private const val MAX_MESSAGE_LINES = 40
 
 /**
  * The conversation.
@@ -200,6 +210,11 @@ private fun MessageCard(message: ChatMessage, streaming: Boolean = false) {
             Text(
                 text = message.text.ifBlank { "..." },
                 style = MaterialTheme.typography.bodyMedium,
+                // A cap, because a single committed message can be long and the
+                // scaling list lays text out as it scrolls. Without it one very
+                // long message makes scrolling stutter on a watch.
+                maxLines = MAX_MESSAGE_LINES,
+                overflow = TextOverflow.Ellipsis,
             )
             message.usage?.let { usage ->
                 Text(text = usage, style = MaterialTheme.typography.labelSmall)

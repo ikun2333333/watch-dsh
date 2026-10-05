@@ -30,6 +30,25 @@ import kotlinx.coroutines.withTimeoutOrNull
 /** How often buffered streamed text is published; roughly a readable cadence. */
 private const val STREAM_FLUSH_MS = 100L
 
+/**
+ * How much of a streaming reply to keep.
+ *
+ * A watch screen shows a few hundred characters at a time, and the full reply is
+ * committed to the transcript as soon as it arrives, so this is generous for
+ * reading while keeping the string small enough that concatenating onto it stays
+ * cheap.
+ */
+private const val STREAMING_KEEP_CHARS = 4_000
+
+/**
+ * How many transcript messages to keep on screen.
+ *
+ * The Harness owns the transcript; this is a reading window, not a copy. An
+ * unbounded list is what a long session hands the watch, and holding all of it
+ * costs memory and layout time for messages the user has long scrolled past.
+ */
+private const val TRANSCRIPT_KEEP_MESSAGES = 60
+
 /** One line of the conversation as the watch shows it. */
 data class ChatMessage(
     val id: String,
@@ -64,6 +83,15 @@ data class Activity(
  */
 data class UiState(
     val settings: Settings = Settings(),
+    /**
+     * Whether the stored settings have been read at all.
+     *
+     * [settings] starts at its empty default, which is indistinguishable from a
+     * watch that has genuinely never been configured. Anything that must not act
+     * on "unconfigured" before the read completes - the starting screen does -
+     * has to wait for this.
+     */
+    val settingsLoaded: Boolean = false,
     val link: LinkState = LinkState.Disconnected,
     val status: BridgeStatus? = null,
     val sessions: List<SessionRow> = emptyList(),
@@ -134,7 +162,7 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
         // repeated reconnects.
         viewModelScope.launch {
             settingsStore.settings.distinctUntilChanged().collect { settings ->
-                _state.update { it.copy(settings = settings) }
+                _state.update { it.copy(settings = settings, settingsLoaded = true) }
                 if (settings.isConfigured) {
                     val current = link.state.value
                     if (current == LinkState.Disconnected) {
@@ -229,7 +257,7 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         currentSessionId = sessionId,
                         currentTitle = it.sessions.firstOrNull { row -> row.id == sessionId }?.title.orEmpty(),
-                        messages = transcript.entries.orEmpty().map(::toMessage),
+                        messages = transcript.entries.orEmpty().map(::toMessage).takeLast(TRANSCRIPT_KEEP_MESSAGES),
                         streaming = "",
                         lastError = null,
                     )
@@ -351,7 +379,23 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
         if (streamBuffer.isEmpty()) return
         val chunk = streamBuffer.toString()
         streamBuffer.setLength(0)
-        _state.update { state -> state.copy(streaming = state.streaming + chunk, activity = state.activity.copy(running = true)) }
+        _state.update { state ->
+            val grown = state.streaming + chunk
+            state.copy(
+                // Only the tail is kept. The whole reply is on the PC, and the
+                // committed message replaces this as soon as it arrives, so the
+                // watch is not the place to hold all of it. Keeping it all was
+                // quadratic: `streaming + chunk` reallocates the whole string,
+                // and a watch has neither the cpu nor the heap to do that several
+                // times a second once a reply runs long.
+                streaming = if (grown.length > STREAMING_KEEP_CHARS) {
+                    grown.takeLast(STREAMING_KEEP_CHARS)
+                } else {
+                    grown
+                },
+                activity = state.activity.copy(running = true),
+            )
+        }
     }
 
     /** Publish immediately, for boundaries where waiting would look wrong. */
@@ -457,6 +501,10 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
      *
      * The bridge re-sends a window on attach, so entries are merged by sequence
      * number: a replayed entry replaces its earlier copy instead of duplicating.
+     *
+     * The result is trimmed to a reading window. The merge builds a map of
+     * everything it was given, so letting that set grow without bound means every
+     * later event copies the entire session history to add one line to it.
      */
     private fun mergeTranscript(existing: List<ChatMessage>, incoming: List<TranscriptEntry>): List<ChatMessage> {
         if (incoming.isEmpty()) return existing
@@ -464,7 +512,7 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
         for (message in existing) if (!message.id.startsWith("local-")) bySeq[message.id] = message
         for (entry in incoming) bySeq[entry.seq.toString()] = toMessage(entry)
         // Locally echoed prompts stay at the end until the bridge confirms them.
-        return bySeq.values.toList()
+        return bySeq.values.toList().takeLast(TRANSCRIPT_KEEP_MESSAGES)
     }
 
     private fun toMessage(entry: TranscriptEntry) = ChatMessage(
