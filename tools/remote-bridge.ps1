@@ -58,18 +58,43 @@ function Test-Port([int] $PortNumber) {
 # --- the Harness has to be running, because the bridge is its client ------------
 # Without it the bridge exits immediately, and the watch then reports a connection
 # it cannot use - a failure that looks like a relay problem and is not one.
-if ([string]::IsNullOrEmpty($DshUrl)) {
-  $DshUrl = if ([string]::IsNullOrEmpty($env:DSH_WEB_URL)) { "http://127.0.0.1:3080" } else { $env:DSH_WEB_URL }
-}
-$dshPort = ([Uri]$DshUrl).Port
-if ($dshPort -le 0) { $dshPort = 3080 }
+#
+# The port is discovered rather than assumed, because the obvious sources are both
+# wrong in the case that matters. `DSH_WEB_URL` exists only in the shell that
+# launched the Harness - not in the fresh environment a double-click creates - and
+# the bridge's own default of 3080 is not where a Harness started with `--port`
+# listens. Assuming either produced "the Harness is not serving on 3080" while it
+# was plainly serving on 19387.
+function Find-Harness {
+  $candidates = @()
+  if (-not [string]::IsNullOrEmpty($DshUrl)) { $candidates += $DshUrl }
+  if (-not [string]::IsNullOrEmpty($env:DSH_WEB_URL)) { $candidates += $env:DSH_WEB_URL }
+  # 3080 is the bridge's default, so a Harness started without --port lands there.
+  # The rest are ports a Harness is commonly given by hand or by the desktop app.
+  foreach ($candidatePort in @(3080, 19387, 3000, 8080)) {
+    $candidates += "http://127.0.0.1:$candidatePort"
+  }
 
-if (-not (Test-Port $dshPort)) {
-  Write-Host "The Harness is not serving on port $dshPort." -ForegroundColor Red
-  Write-Host "Start it first, in another window:" -ForegroundColor Yellow
-  Write-Host "  dsh web --port $dshPort --no-open" -ForegroundColor Yellow
+  foreach ($candidate in $candidates) {
+    $port = ([Uri]$candidate).Port
+    if ($port -gt 0 -and (Test-Port $port)) { return $candidate }
+  }
+  return $null
+}
+
+$found = Find-Harness
+if ($found -eq $null) {
+  Write-Host "No Harness is serving on any port this script knows about." -ForegroundColor Red
+  Write-Host "Checked: 3080 (the bridge default), 19387, 3000, 8080." -ForegroundColor Yellow
+  Write-Host ""
+  Write-Host "Start one, then run this again:" -ForegroundColor Yellow
+  Write-Host "  dsh web --port 3080 --no-open" -ForegroundColor Yellow
+  Write-Host ""
+  Write-Host "Or point this script at one that is already running:" -ForegroundColor Yellow
+  Write-Host "  .\tools\remote-bridge.ps1 -DshUrl http://127.0.0.1:<port>" -ForegroundColor Yellow
   exit 1
 }
+$DshUrl = $found
 Write-Host "harness : $DshUrl" -ForegroundColor DarkGray
 
 # --- stop any bridge already running, so this one owns the pc id ----------------
@@ -98,6 +123,10 @@ Write-Host ""
 $arguments = @(
   "--import", $preloadUrl, $bridge,
   "--relay", $Relay,
+  # Passed explicitly rather than left to the environment: the bridge would
+  # otherwise fall back to its own default of 3080, which is not where this
+  # Harness is, so discovering the port here would fix nothing.
+  "--dsh", $DshUrl,
   "--token-file", $tokenFile,
   "--state", $stateDir
 )
