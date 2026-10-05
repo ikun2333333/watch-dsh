@@ -1,6 +1,8 @@
 package dev.watchdsh.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -19,6 +21,15 @@ import dev.watchdsh.net.LinkState
 
 /** The screens this app has. Navigation is a single enum: there are only four. */
 enum class Screen { Setup, Sessions, Chat, Settings }
+
+/**
+ * How long a screen takes to crossfade.
+ *
+ * Short on purpose. A watch is glanced at, and a slow transition turns every
+ * navigation into a wait; this is long enough to read as movement and short
+ * enough not to delay the screen the user asked for.
+ */
+private val SCREEN_FADE = tween<Float>(durationMillis = 220)
 
 /**
  * Root of the app.
@@ -98,58 +109,76 @@ fun WatchDshApp() {
         // AppScaffold is the app-level container; it owns the system time text
         // that Wear requires at the top of a round display.
         AppScaffold(timeText = { TimeText() }) {
-            when {
-                showSettings && screen != Screen.Chat -> SettingsScreen(
-                    state = state,
-                    onSave = { url, lanUrl, token, secret, pcId ->
-                        viewModel.saveConnection(url, token, secret, pcId, lanUrl)
-                        showSettings = false
-                        screen = Screen.Sessions
-                    },
-                    onForget = {
-                        viewModel.forgetConnection()
-                        showSettings = false
-                        screen = Screen.Setup
-                    },
-                    onBack = { showSettings = false },
-                )
+            // Screens crossfade. Without this a switch is a single-frame swap,
+            // which on a round display reads as the app jumping rather than
+            // moving: the eye gets no cue about which screen it is now looking at,
+            // and a switch that happens while the previous screen was mid-scroll
+            // is especially hard to follow.
+            Crossfade(targetState = visibleScreen(screen, showSettings), animationSpec = SCREEN_FADE) { shown ->
+                when (shown) {
+                    Screen.Settings -> SettingsScreen(
+                        state = state,
+                        onSave = { url, lanUrl, token, secret, pcId ->
+                            viewModel.saveConnection(url, token, secret, pcId, lanUrl)
+                            showSettings = false
+                            screen = Screen.Sessions
+                        },
+                        onForget = {
+                            viewModel.forgetConnection()
+                            showSettings = false
+                            screen = Screen.Setup
+                        },
+                        onBack = { showSettings = false },
+                    )
 
-                screen == Screen.Setup -> SetupScreen(
-                    state = state,
-                    onSaveManual = { url, lanUrl, token, secret, pcId ->
-                        viewModel.saveConnection(url, token, secret, pcId, lanUrl)
-                        // The session list is where a successful connection lands; a
-                        // failure surfaces there as a status line rather than
-                        // trapping the user on this screen.
-                        screen = Screen.Sessions
-                    },
-                )
+                    Screen.Setup -> SetupScreen(
+                        state = state,
+                        onSaveManual = { url, lanUrl, token, secret, pcId ->
+                            viewModel.saveConnection(url, token, secret, pcId, lanUrl)
+                            // The session list is where a successful connection
+                            // lands; a failure surfaces there as a status line
+                            // rather than trapping the user on this screen.
+                            screen = Screen.Sessions
+                        },
+                    )
 
-                screen == Screen.Chat -> ConversationScreen(
-                    state = state,
-                    onBack = { screen = Screen.Sessions },
-                    onSend = viewModel::send,
-                    onCancel = viewModel::cancel,
-                    onVoiceResult = viewModel::send,
-                    onAllow = viewModel::allow,
-                    onReject = viewModel::reject,
-                )
+                    Screen.Chat -> ConversationScreen(
+                        state = state,
+                        onBack = { screen = Screen.Sessions },
+                        onSend = viewModel::send,
+                        onCancel = viewModel::cancel,
+                        onVoiceResult = viewModel::send,
+                        onAllow = viewModel::allow,
+                        onReject = viewModel::reject,
+                    )
 
-                else -> SessionsScreen(
-                    state = state,
-                    onOpen = { sessionId ->
-                        viewModel.openSession(sessionId)
-                        screen = Screen.Chat
-                    },
-                    onNew = {
-                        viewModel.startNewSession()
-                        screen = Screen.Chat
-                    },
-                    onRefresh = viewModel::refreshSessions,
-                    onReconnect = viewModel::reconnect,
-                    onSettings = { showSettings = true },
-                )
+                    Screen.Sessions -> SessionsScreen(
+                        state = state,
+                        onOpen = { sessionId ->
+                            viewModel.openSession(sessionId)
+                            screen = Screen.Chat
+                        },
+                        onNew = {
+                            viewModel.startNewSession()
+                            screen = Screen.Chat
+                        },
+                        onRefresh = viewModel::refreshSessions,
+                        onReconnect = viewModel::reconnect,
+                        onSettings = { showSettings = true },
+                    )
+                }
             }
         }
     }
 }
+
+/**
+ * Which screen is actually shown, from the two things that decide it.
+ *
+ * Settings is a panel over the list rather than a peer of the conversation, so it
+ * is ignored while a conversation is open. Keeping this as one expression gives
+ * the crossfade a single value to animate between, instead of it having to infer
+ * a screen from a chain of conditions.
+ */
+private fun visibleScreen(screen: Screen, showSettings: Boolean): Screen =
+    if (showSettings && screen != Screen.Chat) Screen.Settings else screen

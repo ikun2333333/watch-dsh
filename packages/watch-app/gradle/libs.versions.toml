@@ -35,6 +35,8 @@ androidx-core-splashscreen = { module = "androidx.core:core-splashscreen", versi
 # Compose BOM pins every Compose artifact to one mutually tested set.
 androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
 androidx-compose-ui = { module = "androidx.compose.ui:ui" }
+# Crossfade and the animation specs; the BOM pins the version with the rest.
+androidx-compose-animation = { module = "androidx.compose.animation:animation" }
 androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
 androidx-compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
 androidx-compose-material-icons = { module = "androidx.compose.material:material-icons-core" }
