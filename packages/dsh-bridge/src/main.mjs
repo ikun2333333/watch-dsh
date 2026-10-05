@@ -262,6 +262,17 @@ console.log(`  write them to a config with:  --write-config <path>`);
 console.log('');
 console.log(`main: harness ready at ${baseUrl} (${String(descriptors.all.length)} endpoints known)`);
 
+/**
+ * How often to ping the relay, and how long to wait for a pong before deciding the
+ * link is dead.
+ *
+ * The timeout is generous compared with the interval because the point is to catch
+ * a link that is silently gone, not to measure latency: a slow round trip over
+ * mobile data is not a failure, while no answer at all across several intervals is.
+ */
+const PING_INTERVAL_MS = 20_000;
+const PONG_TIMEOUT_MS = 70_000;
+
 /** Watch attachment ids, so a relay reconnect re-attaches cleanly. */
 let socket;
 let reconnectDelay = 1000;
@@ -275,9 +286,62 @@ function connect() {
   /** Per-watch links on this relay connection, keyed by the relay's `from` id. */
   socket.watchLinks = new Map();
 
+  /**
+   * When the last pong arrived, or the time the last ping went out unanswered.
+   *
+   * A relay connection can die without a close frame - a laptop suspends, a NAT
+   * mapping expires, a Durable Object is evicted - and the socket then looks open
+   * forever. The relay keeps treating this PC as attached, so watches connect,
+   * are told the PC is online, and get no answer, while this side never learns it
+   * has to reconnect. That is what the heartbeat below detects.
+   */
+  let lastPong = Date.now();
+  let heartbeat;
+  let heartbeatTimeout;
+  let beats = 0;
+
+  const stopHeartbeat = () => {
+    clearInterval(heartbeat);
+    clearTimeout(heartbeatTimeout);
+  };
+
+  const beat = () => {
+    if (socket.readyState !== WebSocket.OPEN) return;
+    const silentFor = Date.now() - lastPong;
+    if (silentFor > PONG_TIMEOUT_MS) {
+      // Silently dead: terminate rather than close, because a close frame cannot
+      // be delivered over a connection that is not carrying anything. `close`
+      // fires the reconnect path either way.
+      console.log(`main: relay stopped answering; reconnecting (silent ${String(silentFor)}ms)`);
+      stopHeartbeat();
+      socket.terminate();
+      return;
+    }
+    // Logged periodically rather than per beat, so the log stays readable while
+    // still showing at a glance whether the link is answering at all.
+    beats += 1;
+    if (beats % 5 === 0) {
+      console.log(`main: relay link alive (pong ${String(silentFor)}ms ago)`);
+    }
+    try {
+      socket.ping();
+    } catch (error) {
+      console.log(`main: ping failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
   socket.on('open', () => {
     reconnectDelay = 1000;
+    lastPong = Date.now();
+    stopHeartbeat();
+    heartbeat = setInterval(beat, PING_INTERVAL_MS);
+    // Node timers would hold the process open on their own; this one is meant to.
+    heartbeat.unref?.();
     console.log(`main: attached to relay as pc "${pcId}" (${relayUrl})`);
+  });
+
+  socket.on('pong', () => {
+    lastPong = Date.now();
   });
 
   socket.on('message', (data) => {
@@ -339,6 +403,7 @@ function connect() {
 
   socket.on('close', (code) => {
     console.log(`main: relay link closed (${String(code)}); retrying in ${String(reconnectDelay)}ms`);
+    stopHeartbeat();
     for (const watchId of socket.watchLinks.keys()) bridge.detachWatch(watchId);
     socket.watchLinks.clear();
     setTimeout(connect, reconnectDelay);
