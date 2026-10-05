@@ -29,3 +29,8 @@ node_modules/
 *.iml
 Thumbs.db
 .DS_Store
+
+# One-off system backups (BCD, partition layout, GRUB config). They describe
+# this machine's boot configuration, so they are kept outside the repository.
+arch-removal-backup/
+
