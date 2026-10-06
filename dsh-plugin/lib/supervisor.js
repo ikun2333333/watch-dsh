@@ -301,7 +301,13 @@ export class WatchLink {
     return null
   }
 
-  start() {
+  /**
+   * Prepare the state, start the relay, and start the bridge when appropriate.
+   *
+   * @param options.bridge - whether to start the bridge now. False while the
+   *   Harness address is still being looked for; see [startBridge].
+   */
+  start({ bridge = true } = {}) {
     // The token comes first: both children take it as an argument, so a missing
     // one makes each of them exit for a reason that reads as unrelated.
     try {
@@ -319,14 +325,25 @@ export class WatchLink {
     // chance to fail on their own without taking the other down.
     this.relay.start()
 
+    // The bridge can be held back when the Harness address is not known yet. It
+    // exits immediately without one, and a process that keeps exiting and being
+    // restarted is worse than one that has not been started: the status line would
+    // flicker between "starting" and "not running" while the address is being
+    // found.
+    if (bridge) this.startBridge()
+  }
+
+  /** Start the bridge. Safe to call when it is already running. */
+  startBridge() {
+    if (this.blocked !== null || this.bridge.running) return
+    if (this.dshUrl === null) return
+
     this.bridge.args = [
       this.bridgeEntry,
       '--relay', this.bridgeRelayUrl(),
       '--token-file', this.tokenFile,
       '--state', this.stateDir,
-      // Omitted rather than defaulted when the Harness address is unknown, so the
-      // bridge's own fallback does not quietly point it at the wrong port.
-      ...(this.dshUrl === null ? [] : ['--dsh', this.dshUrl]),
+      '--dsh', this.dshUrl,
     ]
     this.bridge.start()
   }

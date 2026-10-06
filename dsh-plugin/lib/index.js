@@ -39,6 +39,17 @@ const DEFAULT_REPO = 'C:\\Users\\q1375\\Documents\\watch-dsh'
 /** How often the status file is refreshed. */
 const WRITE_INTERVAL_MS = 2000
 
+/**
+ * How long to keep looking for the Harness, and how often.
+ *
+ * The first probe always fails because plugins load before the HTTP server
+ * answers; the question is only how long that gap is. Twenty attempts over two
+ * minutes covers a slow start without leaving a bridge-less plugin running
+ * indefinitely behind a status line that says so.
+ */
+const HARNESS_ATTEMPTS = 20
+const HARNESS_RETRY_MS = 6000
+
 export const name = 'watch-dsh'
 
 /**
@@ -77,23 +88,23 @@ export function apply(ctx, config) {
       dshUrl: null,
     })
 
-    // The Harness address is found before the bridge is started, because a bridge
-    // started without it exits at once and reports a connection refused against a
-    // port nothing is listening on - which reads as a broken plugin rather than as
-    // a missing address. Detection is asynchronous, so the relay can come up while
-    // it runs.
-    findHarnessUrl(config?.dshUrl, log)
-      .then((url) => {
-        link.dshUrl = url ?? dshUrlFromEnv(undefined)
-        link.start()
-        log(`started: mode=${link.mode} relay=${link.bridgeRelayUrl()} harness=${link.dshUrl ?? '(unknown)'}`)
-      })
-      .catch((error) => {
-        log(`could not start the link: ${error?.message ?? String(error)}`)
-        // Started anyway: the status endpoint then reports a bridge that is not
-        // running, which is a better answer than no status at all.
-        link.start()
-      })
+    // The relay is started straight away: it does not need the Harness address, and
+    // having it listening while the address is being found means a watch that
+    // connects early still reaches something.
+    link.start({ bridge: false })
+
+    // The Harness address has to be found before the bridge is started: a bridge
+    // started without it exits at once with a connection refused against a port
+    // nothing is listening on, which reads as a broken plugin rather than as a
+    // missing address.
+    //
+    // It also has to be found *later*, not once. Plugins load before the shell's
+    // HTTP server is answering - a probe run at load time reports that every
+    // candidate refused - so a single attempt leaves the bridge never started and
+    // the status line saying "bridge is not running" forever. The retry is what
+    // turns "not answering yet" into "found", and it is also what recovers if the
+    // port moves.
+    const finder = startWhenHarnessFound(link, config?.dshUrl, log)
 
     // Status goes three places, deliberately:
     //   - a loopback endpoint the browser half fetches (the only one that reaches
@@ -132,6 +143,7 @@ export function apply(ctx, config) {
     ctx.effect(
       () => () => {
         clearInterval(timer)
+        finder.cancel()
         link.stop()
         statusServer?.close?.()
         log('stopped')
@@ -142,6 +154,74 @@ export function apply(ctx, config) {
     log(`FAILED to start: ${error?.stack ?? error?.message ?? String(error)}`)
     ctx.logger?.error?.(`watch-dsh failed to start: ${error?.message ?? String(error)}`)
   }
+}
+
+/**
+ * Find the Harness, then start the bridge; keep looking if it is not there yet.
+ *
+ * Plugins are loaded before the shell's HTTP server answers, so the first probe
+ * always fails - every candidate refuses the connection. Doing the search once
+ * therefore left the bridge never started and the status line reading "bridge is
+ * not running" for the life of the process. Retrying is what turns "not answering
+ * yet" into "found".
+ *
+ * The relay is already running by the time this is called, so a watch that
+ * connects during the search arrives somewhere.
+ *
+ * @returns a handle with `cancel()`, for the plugin's disposer.
+ */
+function startWhenHarnessFound(link, configured, log) {
+  let stopped = false
+
+  const run = async () => {
+    // A configured or inherited address short-circuits the search; the probe is
+    // only for when nothing says where the Harness is.
+    const known = dshUrlFromEnv(configured)
+    if (known !== null) {
+      link.dshUrl = known
+      link.startBridge()
+      log(`bridge started against ${known} (from config or environment)`)
+      return
+    }
+
+    for (let attempt = 1; !stopped && attempt <= HARNESS_ATTEMPTS; attempt += 1) {
+      const url = await findHarnessUrl(undefined, () => {})
+      if (stopped) return
+
+      if (url !== null) {
+        link.dshUrl = url
+        link.startBridge()
+        log(`bridge started against ${url} (found on attempt ${attempt})`)
+        return
+      }
+
+      // Logged once rather than per attempt: a dozen identical lines would bury
+      // everything else in a log that is read by eye.
+      if (attempt === 1 || attempt === HARNESS_ATTEMPTS) {
+        log(`no harness yet (attempt ${attempt}/${HARNESS_ATTEMPTS}); retrying`)
+      }
+      await delay(HARNESS_RETRY_MS)
+    }
+
+    if (!stopped) log('gave up looking for the harness; the bridge is not running')
+  }
+
+  void run().catch((error) => {
+    log(`looking for the harness failed: ${error?.message ?? String(error)}`)
+  })
+
+  return {
+    cancel() {
+      stopped = true
+    },
+  }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref?.()
+  })
 }
 
 /**
