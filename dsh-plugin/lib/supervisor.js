@@ -202,7 +202,15 @@ export class WatchLink {
     this.repo = options.repo
     this.node = options.node
     this.relayPort = options.relayPort
-    this.dshUrl = options.dshUrl ?? `http://127.0.0.1:${options.dshPort ?? 3080}`
+    /**
+     * Where the Harness is, or null when nothing could tell us.
+     *
+     * Null is a distinct state rather than a default: the bridge's own fallback is
+     * 3080, and silently using it produces a bridge that starts, reports itself
+     * running, and cannot reach the Harness it exists to serve. That is what
+     * happened while DSH was actually on 19500.
+     */
+    this.dshUrl = options.dshUrl ?? null
     this.stateDir = options.stateDir
     this.tokenFile = options.tokenFile
 
@@ -316,10 +324,9 @@ export class WatchLink {
       '--relay', this.bridgeRelayUrl(),
       '--token-file', this.tokenFile,
       '--state', this.stateDir,
-      // Passed explicitly: the bridge's own default is 3080, which is not where
-      // this Harness is, and a wrong value here looks like a watch that connects
-      // but never gets an answer.
-      '--dsh', this.dshUrl,
+      // Omitted rather than defaulted when the Harness address is unknown, so the
+      // bridge's own fallback does not quietly point it at the wrong port.
+      ...(this.dshUrl === null ? [] : ['--dsh', this.dshUrl]),
     ]
     this.bridge.start()
   }

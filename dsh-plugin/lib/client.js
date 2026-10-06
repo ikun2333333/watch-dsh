@@ -1,14 +1,21 @@
 /**
  * dsh-watch-dsh, browser half.
  *
- * Contributes the watch link's status and mode switch to the composer bar. It
- * reads from the host half over plain HTTP rather than the client RPC layer:
- * `ctx.webServer` already serves routes on the GUI's own origin, so a fetch needs
- * no generated contract and stays readable in the network tab.
+ * Shows the watch link's status in the composer bar.
  *
- * The bundle format is the one the client module loader expects - a
- * `window.__ModuleLoader__.load` call rather than a plain ES module - because
- * that is how the shell discovers and executes browser plugins.
+ * ## Where the data comes from
+ *
+ * A status file the host half writes, fetched by URL. Not an HTTP route: the
+ * desktop app serves the UI over a custom `dsh-app://` protocol and has no web
+ * server, so a route would only work in the browser shell. A file read works in
+ * both.
+ *
+ * ## Why it renders nothing when it cannot read
+ *
+ * This plugin once stopped DSH from starting, by leaving the conversation UI
+ * waiting on a slot occupant that never became ready. The lesson taken from that
+ * is here: if the status cannot be read, the component returns null. A status
+ * line that is absent is a small loss; a composer bar that blocks is not.
  */
 window.__ModuleLoader__.load({
 	id: "dsh-watch-dsh",
@@ -19,33 +26,41 @@ window.__ModuleLoader__.load({
 
 		let react = require("react")
 
-		const BASE = "/watch-dsh"
-
 		/** Poll cadence. A status light, not a progress bar. */
 		const POLL_MS = 3000
 
-		async function getStatus() {
-			try {
-				const response = await fetch(BASE + "/status", { credentials: "same-origin" })
-				if (!response.ok) return null
-				return await response.json()
-			} catch {
-				return null
-			}
+		/**
+		 * Candidate URLs for the status file, most likely first.
+		 *
+		 * The host writes into the workspace's own state directory, and the shell's
+		 * URL does not map onto the filesystem in a way worth relying on, so several
+		 * shapes are tried and a miss is not an error - it means the bar stays
+		 * absent, which is the safe outcome.
+		 *
+		 * `__DSH_WATCH_STATUS__` is honoured first so the host can name the exact
+		 * URL through an index injection rather than leaving it to be guessed.
+		 */
+		function candidateUrls() {
+			const configured = globalThis.__DSH_WATCH_STATUS__
+			const list = configured ? [String(configured)] : []
+			return list.concat([
+				"/watch-dsh/status.json",
+				"/.state/dsh-status.json",
+				"./.state/dsh-status.json",
+			])
 		}
 
-		async function setMode(mode) {
-			try {
-				const response = await fetch(BASE + "/mode", {
-					method: "POST",
-					credentials: "same-origin",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify({ mode }),
-				})
-				return await response.json()
-			} catch (error) {
-				return { ok: false, error: String(error) }
+		async function readStatus() {
+			for (const url of candidateUrls()) {
+				try {
+					const response = await fetch(url, { credentials: "omit", cache: "no-store" })
+					if (!response.ok) continue
+					return await response.json()
+				} catch {
+					// Next shape; the list is short and ordered by likelihood.
+				}
 			}
+			return null
 		}
 
 		const CSS = [
@@ -57,13 +72,6 @@ window.__ModuleLoader__.load({
 			".dshwd-bad{background:#f85149}",
 			".dshwd-label{font-family:var(--dsw-font-mono);white-space:nowrap;overflow:hidden;",
 			"text-overflow:ellipsis;min-width:0;flex:1}",
-			".dshwd-modes{display:flex;gap:2px;flex:none}",
-			".dshwd-mode{font:inherit;color:var(--dsw-alias-label-tertiary);background:0 0;border:0;",
-			"border-radius:5px;padding:2px 7px;cursor:pointer;line-height:16px}",
-			".dshwd-mode:hover:not(:disabled){color:var(--dsw-alias-label-secondary);",
-			"background:var(--dsw-alias-fill-l2)}",
-			".dshwd-mode:disabled{cursor:default}",
-			".dshwd-modeOn{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-fill-l2)}",
 		].join("")
 
 		function ensureCss() {
@@ -77,27 +85,17 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag)
 		}
 
-		/**
-		 * Status and the mode switch, for the composer bar.
-		 *
-		 * The mode is a manual switch rather than something inferred from the
-		 * network, because inferring it was tried and does not work: broadcast only
-		 * reaches the local network, and routers that drop traffic between wireless
-		 * clients are common enough that this project measured one. A decision that
-		 * depends on a packet the network may discard is a decision that silently
-		 * goes the wrong way, so the user says where they are.
-		 */
+		/** The status line. */
 		function WatchBar() {
 			const [status, setStatus] = react.useState(null)
 			const [seen, setSeen] = react.useState(false)
-			const [busy, setBusy] = react.useState(false)
 
 			react.useEffect(() => {
 				let live = true
 				ensureCss()
 
 				const tick = async () => {
-					const next = await getStatus()
+					const next = await readStatus()
 					if (!live) return
 					setStatus(next)
 					setSeen(true)
@@ -111,50 +109,18 @@ window.__ModuleLoader__.load({
 				}
 			}, [])
 
-			const mode = status?.mode ?? "lan"
-			const online = status !== null && status.ok === true
-			const tone = !seen ? "" : status === null ? "dshwd-bad" : online ? "dshwd-ok" : "dshwd-warn"
+			// Nothing readable: contribute nothing. See the file comment.
+			if (!seen || status === null) return null
 
-			const label = !seen
-				? "watch: connecting"
-				: status === null
-					? "watch: plugin not serving"
-					: status.detail
-
-			const press = async (next) => {
-				if (busy || next === mode) return
-				setBusy(true)
-				const result = await setMode(next)
-				if (!result.ok && result.error) {
-					// Reported through the status line on the next poll, so the bar
-					// never silently ignores a refused switch.
-					setStatus((prev) => (prev ? { ...prev, detail: result.error } : prev))
-				}
-				setBusy(false)
-			}
-
-			const button = (value, text) =>
-				react.createElement(
-					"button",
-					{
-						className: "dshwd-mode" + (mode === value ? " dshwd-modeOn" : ""),
-						onClick: () => press(value),
-						disabled: busy || mode === value,
-						title: value === "lan" ? "Use the relay on this network" : "Use the public relay",
-					},
-					text,
-				)
-
+			const online = status.ok === true
 			return react.createElement(
 				"div",
 				{ className: "dshwd-row" },
-				react.createElement("span", { className: "dshwd-dot " + tone }),
-				react.createElement("span", { className: "dshwd-label", title: label }, label),
+				react.createElement("span", { className: "dshwd-dot " + (online ? "dshwd-ok" : "dshwd-warn") }),
 				react.createElement(
 					"span",
-					{ className: "dshwd-modes" },
-					button("lan", "LAN"),
-					button("public", "Public"),
+					{ className: "dshwd-label", title: status.detail },
+					status.detail ?? "watch",
 				),
 			)
 		}
@@ -162,6 +128,9 @@ window.__ModuleLoader__.load({
 		const inject = ["slots"]
 
 		function apply(ctx) {
+			// Declared, so present; guarded anyway so that a shell without it loses
+			// the bar rather than the plugin.
+			if (typeof ctx?.slots?.inject !== "function") return
 			ctx.slots.inject("conversation.composer.bar", () =>
 				ctx.slots.register(
 					{ name: "conversation.composer.bar", id: "watch-dsh-bar", order: 90 },

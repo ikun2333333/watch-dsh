@@ -3,26 +3,140 @@
  *
  * Brings the two pieces of the watch link up with the Harness itself - the relay
  * a watch dials and the bridge that talks to this Harness - so that starting DSH
- * is the only step. It also owns the pairing flow and reports state to the Web
- * GUI over plain HTTP.
+ * is the only step.
  *
- * HTTP rather than the Typert RPC the shipped plugins use: that layer needs a
- * generated invocation contract, and this plugin has a handful of endpoints and a
- * status blob. Plain routes are inspectable with curl, which is also how this was
- * developed and tested without a browser.
+ * ## Why this does not use the web server
+ *
+ * It did, and that stopped the desktop app from starting. The desktop app serves
+ * the UI over a custom `dsh-app://` protocol and has no `webServer` service at
+ * all, so declaring `inject: ['webServer']` left this plugin permanently
+ * *pending* - never activated. Because it had registered into
+ * `conversation.composer.bar`, that left the conversation plugin waiting on a
+ * slot occupant that would never arrive, and eight client plugins failed to
+ * activate with it. The failure report named the conversation plugin, not this
+ * one, which is why it took a while to find.
+ *
+ * So: no `inject` at all, nothing awaited, and every step guarded. This plugin
+ * must run where the web server does not exist, and must never be something
+ * another plugin waits on.
+ *
+ * ## How status reaches the UI
+ *
+ * It is written to a file - `state/dsh-status.json` - which the browser half
+ * reads. A file rather than a route because a route needs the web server, and a
+ * file behaves identically in both shells.
  */
-import { join } from 'node:path'
-import { readFileSync, appendFileSync, mkdirSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { appendFileSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
 
 import { WatchLink } from './supervisor.js'
+
+/** Where the watch-dsh checkout lives, unless the config says otherwise. */
+const DEFAULT_REPO = 'C:\\Users\\q1375\\Documents\\watch-dsh'
+
+/** How often the status file is refreshed. */
+const WRITE_INTERVAL_MS = 2000
+
+export const name = 'watch-dsh'
+
+/**
+ * Deliberately empty.
+ *
+ * A declared service that never appears leaves the plugin *pending* rather than
+ * failing it, and a slot cannot complete while one of its registered occupants is
+ * pending. Injecting nothing is what makes this plugin unable to hold up the UI.
+ */
+export const inject = []
+
+/**
+ * No `Config` export either: Cordis validates against a schemastery schema, and a
+ * plain object fails the whole tree with an error naming neither config nor this
+ * plugin.
+ */
+
+export function apply(ctx, config) {
+  const repo = String(config?.repo ?? DEFAULT_REPO).replace(/\\\\/g, '\\')
+
+  // Logging first, and inside its own guard, so a failure anywhere below still
+  // leaves a record. An earlier version took DSH down and left nothing to read
+  // but the fact that it had happened.
+  const log = makeLog(repo)
+
+  try {
+    const link = new WatchLink({
+      repo,
+      node: config?.node ?? process.execPath,
+      relayPort: Number(config?.relayPort ?? 8787),
+      stateDir: join(repo, '.state'),
+      tokenFile: join(repo, '.state', 'relay-token'),
+      mode: config?.mode,
+      publicRelayUrl: config?.publicRelayUrl,
+      // The bridge has to be told which Harness to talk to, and the port cannot be
+      // read from a web-server service the desktop shell does not have. DSH puts
+      // it in the environment for exactly this kind of child, and the bridge
+      // already understands the variable, so it is passed through rather than
+      // derived.
+      dshUrl: dshUrlFromEnv(config?.dshUrl),
+    })
+
+    if (link.dshUrl === null) {
+      log('DSH_WEB_URL is not set; the bridge will not find the Harness')
+    }
+
+    link.start()
+    log(`started: mode=${link.mode} relay=${link.bridgeRelayUrl()}`)
+
+    // Status is published on a timer rather than through a service, because the
+    // browser half cannot reach this process any other way that works in both
+    // shells. Unref'd so it can never keep the process alive.
+    const statusFile = join(repo, '.state', 'dsh-status.json')
+    const tick = () => {
+      try {
+        writeStatus(statusFile, link)
+      } catch (error) {
+        log(`could not write status: ${error?.message ?? String(error)}`)
+      }
+    }
+    tick()
+    const timer = setInterval(tick, WRITE_INTERVAL_MS)
+    timer.unref?.()
+
+    ctx.effect(
+      () => () => {
+        clearInterval(timer)
+        link.stop()
+        log('stopped')
+      },
+      'watch-dsh: stop the relay and bridge',
+    )
+  } catch (error) {
+    log(`FAILED to start: ${error?.stack ?? error?.message ?? String(error)}`)
+    ctx.logger?.error?.(`watch-dsh failed to start: ${error?.message ?? String(error)}`)
+  }
+}
+
+/**
+ * Where the Harness is listening, as the bridge should be told.
+ *
+ * Config first, then the environment, because a configured value is a deliberate
+ * statement and the environment is what happened to be inherited. Returns null
+ * when neither is available, which the caller reports rather than silently
+ * letting the bridge fall back to a default port that is probably not this
+ * Harness - the failure that produced "connect ECONNREFUSED 127.0.0.1:3080" in an
+ * earlier version while DSH was actually on 19500.
+ */
+function dshUrlFromEnv(configured) {
+  if (typeof configured === 'string' && configured.trim() !== '') return configured.trim()
+  const fromEnv = process.env.DSH_WEB_URL
+  if (typeof fromEnv === 'string' && fromEnv.trim() !== '') return fromEnv.trim()
+  return null
+}
 
 /**
  * Record what happened where a failed plugin cannot hide it.
  *
- * This plugin once stopped DSH from starting, and the only available evidence was
- * the fact that it did - the error went to a console nobody was reading, and the
- * app simply did not come up. A log file next to the rest of the plugin's state
- * is what makes the next failure diagnosable, whatever it turns out to be.
+ * The log has to be reachable without the plugin working, which is the only state
+ * in which anyone needs it.
  */
 function makeLog(repo) {
   let file = null
@@ -42,229 +156,28 @@ function makeLog(repo) {
   }
 }
 
-/** The relay token as stored, or an empty string when it is not there yet. */
-function readToken(tokenFile) {
-  try {
-    return readFileSync(tokenFile, 'utf8').trim()
-  } catch {
-    return ''
+/**
+ * Publish the status for the browser half to read.
+ *
+ * Written to a temporary file and renamed, so a reader never sees a half-written
+ * document - the browser polls this file, and a partial read would surface as a
+ * parse error rather than as slightly stale data.
+ */
+function writeStatus(file, link) {
+  const snapshot = link.snapshot()
+  const payload = {
+    ok: snapshot.blocked === null && snapshot.bridge.running,
+    detail: describe(snapshot),
+    ...snapshot,
+    at: Date.now(),
   }
+  const temp = `${file}.tmp`
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(temp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+  renameSync(temp, file)
 }
 
-/** Where the watch-dsh checkout lives, unless the config says otherwise. */
-const DEFAULT_REPO = 'C:\\Users\\q1375\\Documents\\watch-dsh'
-
-/** Everything the browser sees lives under this prefix. */
-const PREFIX = '/watch-dsh'
-
-export const name = 'watch-dsh'
-
-/**
- * A hard declaration, because Cordis refuses to read a service that was not
- * declared: `ctx.webServer` on an undeclared service throws "cannot get property
- * without inject" rather than returning undefined, so a soft check in the body
- * cannot work - the access itself is the error.
- *
- * Declaring it also means Cordis waits for the web server before starting this
- * plugin, which is what makes the port readable in the first place.
- */
-export const inject = ['webServer']
-
-/**
- * No `Config` export on purpose.
- *
- * Cordis validates a plugin's config against a schemastery schema, and exporting
- * a plain object instead fails the whole tree with "Cannot read properties of
- * undefined (reading 'validate')" - an error that names neither config nor this
- * plugin. With a few optional settings and defaults in the body, a schema would
- * only add a way to get that wrong.
- */
-
-function json(res, status, body) {
-  const text = JSON.stringify(body)
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  })
-  res.end(text)
-}
-
-/**
- * Read a JSON request body, with a size ceiling.
- *
- * The route is reachable from anything that can reach the GUI's port, so an
- * unbounded body is not acceptable even though the caller is usually this page.
- */
-function readJson(req, limitBytes = 64 * 1024) {
-  return new Promise((resolve, reject) => {
-    let size = 0
-    const chunks = []
-    req.on('data', (chunk) => {
-      size += chunk.length
-      if (size > limitBytes) {
-        reject(new Error('request body too large'))
-        req.destroy()
-        return
-      }
-      chunks.push(chunk)
-    })
-    req.on('error', reject)
-    req.on('end', () => {
-      const raw = Buffer.concat(chunks).toString('utf8')
-      if (raw.trim() === '') return resolve({})
-      try {
-        resolve(JSON.parse(raw))
-      } catch (error) {
-        reject(new Error(`body is not JSON: ${error.message}`))
-      }
-    })
-  })
-}
-
-export function apply(ctx, config) {
-  // Defaults live here rather than in a schema. The repo path arrives through
-  // YAML, where a backslash may be written escaped, so it is normalised on the
-  // way in - a doubled path silently resolves to nothing.
-  const repo = String(config?.repo ?? DEFAULT_REPO).replace(/\\\\/g, '\\')
-  const log = makeLog(repo)
-
-  try {
-    run(ctx, config, repo, log)
-  } catch (error) {
-    // A thrown error out of apply fails this plugin's fiber, and depending on how
-    // the host composes, that can take the whole tree with it. Whatever went
-    // wrong here, DSH starting matters more than this plugin running.
-    log(`FAILED to start: ${error?.stack ?? error?.message ?? String(error)}`)
-    ctx.logger?.error?.(`watch-dsh failed to start: ${error?.message ?? String(error)}`)
-  }
-}
-
-function run(ctx, config, repo, log) {
-  const relayPort = Number(config?.relayPort ?? 8787)
-
-  const stateDir = join(repo, '.state')
-  const tokenFile = join(stateDir, 'relay-token')
-
-  // Declared in `inject`, so this is present by construction. Checked anyway for
-  // the shape, not for absence: a host that provides something other than a
-  // server is a reason to skip the routes, not to fail.
-  const webServer = ctx.webServer
-  if (typeof webServer?.register !== 'function') {
-    log('the webServer service has no register(); the status panel will not be served')
-    return
-  }
-
-  // The Harness this bridge should talk to is the one serving this page, so its
-  // address is read from the web server rather than configured: a second place to
-  // write the port is a second place to get it wrong.
-  const dshUrl = `http://127.0.0.1:${webServer.port}`
-
-  const node = config?.node ?? process.execPath
-
-  const link = new WatchLink({
-    repo,
-    node,
-    relayPort,
-    dshUrl,
-    stateDir,
-    tokenFile,
-    mode: config?.mode === 'public' ? 'public' : 'lan',
-    publicRelayUrl: String(config?.publicRelayUrl ?? ''),
-  })
-
-  link.start()
-
-  ctx.effect(
-    () => () => link.stop(),
-    'watch-dsh: stop the relay and bridge',
-  )
-
-  ctx.effect(
-    () =>
-      webServer.register({
-        kind: 'prefix',
-        path: PREFIX,
-        handler: async (req, res) => {
-          const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-          const route = url.pathname.slice(PREFIX.length) || '/'
-
-          try {
-            if (route === '/' || route === '/status') {
-              const snapshot = link.snapshot()
-              json(res, 200, {
-                ok: snapshot.blocked === null && snapshot.bridge.running,
-                blocked: snapshot.blocked,
-                detail: describe(snapshot),
-                ...snapshot,
-                at: Date.now(),
-              })
-              return
-            }
-
-            if (route === '/restart' && req.method === 'POST') {
-              await link.restart()
-              json(res, 200, { ok: true })
-              return
-            }
-
-            if (route === '/mode' && req.method === 'POST') {
-              const body = await readJson(req)
-              const applied = link.setMode(body.mode, body.publicRelayUrl)
-              if (body.mode === 'public' && applied !== 'public') {
-                json(res, 400, {
-                  ok: false,
-                  error: 'public mode needs a relay URL; nothing was changed',
-                  mode: applied,
-                })
-                return
-              }
-              // Awaited so the answer means the switch happened rather than that
-              // it was requested. The restart takes a few seconds.
-              await link.restart()
-              json(res, 200, { ok: true, mode: applied, relayUrl: link.bridgeRelayUrl() })
-              return
-            }
-
-            // The config a watch is configured from. Returned rather than written,
-            // so the caller decides where it goes; the pairing flow is what pushes
-            // it to a device.
-            if (route === '/watch-config') {
-              const snapshot = link.snapshot()
-              const endpoints = snapshot.endpoints
-              json(res, 200, {
-                ok: true,
-                mode: link.mode,
-                config: {
-                  dsh: 'watch-dsh-config',
-                  v: 1,
-                  pcId: snapshot.bridge.pcId,
-                  relayUrl: endpoints.relayUrl,
-                  lanRelayUrl: endpoints.lanRelayUrl,
-                  relayToken: readToken(link.tokenFile),
-                },
-              })
-              return
-            }
-
-            json(res, 404, { ok: false, error: `no route ${route}` })
-          } catch (error) {
-            json(res, 500, { ok: false, error: error?.message ?? String(error) })
-          }
-        },
-      }),
-    'watch-dsh: http routes',
-  )
-
-  ctx.logger?.info?.(`watch-dsh: ${describe(link.snapshot())}`)
-}
-
-/**
- * One sentence for the status line.
- *
- * Ordered by what the user would have to fix first, so the first thing wrong is
- * the thing shown - a relay that never started makes the bridge's state
- * meaningless.
- */
+/** One sentence a status line can show, ordered by what to fix first. */
 function describe(snapshot) {
   if (snapshot.blocked !== null) return snapshot.blocked
   if (snapshot.restarting) return 'switching relay...'
