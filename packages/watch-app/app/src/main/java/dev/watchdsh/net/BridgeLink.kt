@@ -323,6 +323,9 @@ class BridgeLink(
                 val code = response?.code
                 wifiKeeper?.release()
                 observer?.invoke("socket failed: ${t.javaClass.simpleName}: ${t.message} http=${code ?: "-"}")
+                // The socket is gone, so whatever it last said about the PC is no
+                // longer being kept up to date.
+                pcOnline = null
                 // The relay answers 401 for a bad token and 400 for a missing pc
                 // id; both are configuration errors that retrying cannot fix.
                 _state.value = when (code) {
@@ -343,6 +346,14 @@ class BridgeLink(
                 wifiKeeper?.release()
                 observer?.invoke("socket closed: $code $reason")
                 failAllPending(reason.ifBlank { "closed" })
+                // The state was left untouched here, so closing the socket did not
+                // move the UI: it kept saying "Connected" until something else
+                // disturbed it, which in practice meant the user trying to talk and
+                // waiting out a command timeout. The socket being gone is the
+                // plainest possible statement that the link is not up, so it is said
+                // here rather than inferred later.
+                pcOnline = null
+                _state.value = LinkState.Disconnected
                 scheduleReconnect()
             }
         }
@@ -470,19 +481,51 @@ class BridgeLink(
         val envelope = runCatching { ProtocolJson.decodeFromString<Envelope>(text) }.getOrNull() ?: return
 
         // Transport frames are the relay's own, and the only frames that are not
-        // sealed. The `ready` frame carries the id this link records for logs, and
-        // the relay's own answer to "is the configured PC attached".
+        // sealed. These are the relay telling this watch what happened to the other
+        // end, and they arrive unprompted - which is the whole point of acting on
+        // them: the alternative is finding out when a command times out.
         if (envelope.t != null && !envelope.isSealed) {
-            if (envelope.t == "ready") {
-                relayId = envelope.from
-                // Acted on immediately rather than waiting for the handshake's
-                // 30-second timeout: when the relay already says the PC is absent,
-                // that is what the status line should say, now.
-                val online = envelope.pcOnline
-                pcOnline = online
-                if (online == false) {
-                    observer?.invoke("relay reports pc offline")
+            when (envelope.t) {
+                "ready" -> {
+                    relayId = envelope.from
+                    // Acted on immediately rather than waiting for the handshake's
+                    // 30-second timeout: when the relay already says the PC is
+                    // absent, that is what the status line should say, now.
+                    val online = envelope.pcOnline
+                    pcOnline = online
+                    if (online == false) {
+                        observer?.invoke("relay reports pc offline")
+                        _state.value = LinkState.RelayOnly
+                    }
+                }
+                // The PC's bridge has gone. Pushed to every watch the moment the
+                // relay notices, so there is nothing to wait for and nothing to
+                // poll. Deliberately not a reconnect: the socket to the relay is
+                // still perfectly good, and the PC coming back will announce
+                // itself. Reconnecting here is what made a watch burn battery
+                // cycling a socket every thirty seconds while the computer was off.
+                "peer-offline" -> {
+                    observer?.invoke("relay reports pc offline (pushed)")
+                    pcOnline = false
                     _state.value = LinkState.RelayOnly
+                }
+                // The PC is attached again, sent when it arrives and finds this
+                // watch waiting. The socket was already open, so the link is
+                // re-established by running the handshake that proves it.
+                "watch-online" -> {
+                    observer?.invoke("relay reports pc online (pushed)")
+                    pcOnline = true
+                    scope.launch {
+                        runCatching { handshake() }
+                            .onSuccess {
+                                _state.value = LinkState.Connected
+                                observer?.invoke("re-handshake ok: connected")
+                            }
+                            .onFailure { error ->
+                                observer?.invoke("re-handshake failed: ${error.message}")
+                                _state.value = LinkState.RelayOnly
+                            }
+                    }
                 }
             }
             return
