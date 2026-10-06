@@ -12,9 +12,35 @@
  * developed and tested without a browser.
  */
 import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { readFileSync, appendFileSync, mkdirSync } from 'node:fs'
 
 import { WatchLink } from './supervisor.js'
+
+/**
+ * Record what happened where a failed plugin cannot hide it.
+ *
+ * This plugin once stopped DSH from starting, and the only available evidence was
+ * the fact that it did - the error went to a console nobody was reading, and the
+ * app simply did not come up. A log file next to the rest of the plugin's state
+ * is what makes the next failure diagnosable, whatever it turns out to be.
+ */
+function makeLog(repo) {
+  let file = null
+  try {
+    mkdirSync(join(repo, '.state'), { recursive: true })
+    file = join(repo, '.state', 'dsh-plugin.log')
+  } catch {
+    // Nothing to write to; the plugin still has to work.
+  }
+  return (message) => {
+    if (file === null) return
+    try {
+      appendFileSync(file, `${new Date().toISOString()}  ${message}\n`)
+    } catch {
+      // Logging must never be the thing that breaks the plugin.
+    }
+  }
+}
 
 /** The relay token as stored, or an empty string when it is not there yet. */
 function readToken(tokenFile) {
@@ -33,6 +59,15 @@ const PREFIX = '/watch-dsh'
 
 export const name = 'watch-dsh'
 
+/**
+ * A hard declaration, because Cordis refuses to read a service that was not
+ * declared: `ctx.webServer` on an undeclared service throws "cannot get property
+ * without inject" rather than returning undefined, so a soft check in the body
+ * cannot work - the access itself is the error.
+ *
+ * Declaring it also means Cordis waits for the web server before starting this
+ * plugin, which is what makes the port readable in the first place.
+ */
 export const inject = ['webServer']
 
 /**
@@ -91,15 +126,38 @@ export function apply(ctx, config) {
   // YAML, where a backslash may be written escaped, so it is normalised on the
   // way in - a doubled path silently resolves to nothing.
   const repo = String(config?.repo ?? DEFAULT_REPO).replace(/\\\\/g, '\\')
+  const log = makeLog(repo)
+
+  try {
+    run(ctx, config, repo, log)
+  } catch (error) {
+    // A thrown error out of apply fails this plugin's fiber, and depending on how
+    // the host composes, that can take the whole tree with it. Whatever went
+    // wrong here, DSH starting matters more than this plugin running.
+    log(`FAILED to start: ${error?.stack ?? error?.message ?? String(error)}`)
+    ctx.logger?.error?.(`watch-dsh failed to start: ${error?.message ?? String(error)}`)
+  }
+}
+
+function run(ctx, config, repo, log) {
   const relayPort = Number(config?.relayPort ?? 8787)
 
   const stateDir = join(repo, '.state')
   const tokenFile = join(stateDir, 'relay-token')
 
+  // Declared in `inject`, so this is present by construction. Checked anyway for
+  // the shape, not for absence: a host that provides something other than a
+  // server is a reason to skip the routes, not to fail.
+  const webServer = ctx.webServer
+  if (typeof webServer?.register !== 'function') {
+    log('the webServer service has no register(); the status panel will not be served')
+    return
+  }
+
   // The Harness this bridge should talk to is the one serving this page, so its
   // address is read from the web server rather than configured: a second place to
   // write the port is a second place to get it wrong.
-  const dshUrl = `http://127.0.0.1:${ctx.webServer.port}`
+  const dshUrl = `http://127.0.0.1:${webServer.port}`
 
   const node = config?.node ?? process.execPath
 
@@ -123,7 +181,7 @@ export function apply(ctx, config) {
 
   ctx.effect(
     () =>
-      ctx.webServer.register({
+      webServer.register({
         kind: 'prefix',
         path: PREFIX,
         handler: async (req, res) => {
