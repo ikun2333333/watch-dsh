@@ -131,8 +131,27 @@ export function apply(ctx, config) {
     // Started without being awaited into apply: the listener is asynchronous, and
     // a plugin that blocks its own activation on a socket is a plugin that can
     // hold up whatever waits for it.
+    //
+    // The mode switch goes through this listener rather than through the host's UI
+    // plumbing for the same reason the status does: it is the one channel the
+    // plugin owns end to end, so it behaves the same in both shells.
     let statusServer = null
-    startStatusServer(status, log)
+    startStatusServer(
+      status,
+      (mode) => {
+        const applied = link.setMode(mode)
+        if (applied !== mode) return null
+        // Refused switches report null so the response never claims a success that
+        // did not happen; a real switch restarts the bridge, which is why `--relay`
+        // cannot simply be re-argued on a running process.
+        void link
+          .restart()
+          .then(() => log(`switched to ${applied}`))
+          .catch((error) => log(`switching failed: ${error?.message ?? String(error)}`))
+        return applied
+      },
+      log,
+    )
       .then((server) => {
         statusServer = server
       })

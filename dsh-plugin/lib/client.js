@@ -76,7 +76,37 @@ window.__ModuleLoader__.load({
 			".dshwd_warn{background:#d29922}",
 			".dshwd_label{font-family:var(--dsw-font-mono);white-space:nowrap;overflow:hidden;",
 			"text-overflow:ellipsis;min-width:0;flex:1}",
+			".dshwd_modes{display:flex;gap:2px;flex:none}",
+			".dshwd_mode{font:inherit;color:var(--dsw-alias-label-tertiary);background:0 0;border:0;",
+			"border-radius:5px;padding:2px 7px;cursor:pointer;line-height:16px}",
+			".dshwd_mode:hover:not(:disabled){color:var(--dsw-alias-label-secondary);",
+			"background:var(--dsw-alias-fill-l2)}",
+			".dshwd_mode:disabled{cursor:default}",
+			".dshwd_modeOn{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-fill-l2)}",
 		].join("")
+
+		/**
+		 * Ask the host half to move the bridge to another relay.
+		 *
+		 * The switch is a POST so a prefetch cannot perform it, and the host half
+		 * refuses one it cannot honour rather than reporting a success.
+		 */
+		async function sendMode(mode) {
+			for (const url of candidateUrls()) {
+				try {
+					const response = await fetch(url, {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ mode }),
+					})
+					if (response.ok) return await response.json()
+					if (response.status === 400) return await response.json()
+				} catch {
+					// Next port.
+				}
+			}
+			return null
+		}
 
 		function ensureCss() {
 			if (typeof document === "undefined") return
@@ -92,6 +122,29 @@ window.__ModuleLoader__.load({
 		function WatchStatus() {
 			const [status, setStatus] = react.useState(null)
 			const [seen, setSeen] = react.useState(false)
+			const [busy, setBusy] = react.useState(false)
+
+			/**
+			 * Switch relays, and report a refusal rather than swallowing it.
+			 *
+			 * The host half restarts the bridge, so this is not instant; `busy` covers
+			 * the gap so a second press cannot queue another switch behind the first.
+			 */
+			const press = async (next) => {
+				if (busy) return
+				setBusy(true)
+				try {
+					const result = await sendMode(next)
+					if (result?.status) setStatus(result.status)
+					else if (result?.error) {
+						// Shown through the label, so a refused switch is visible instead
+						// of looking like a button that did nothing.
+						setStatus((prev) => (prev ? { ...prev, detail: result.error } : prev))
+					}
+				} finally {
+					setBusy(false)
+				}
+			}
 
 			react.useEffect(() => {
 				let live = true
@@ -116,7 +169,27 @@ window.__ModuleLoader__.load({
 			// small loss; a composer that waits on this is not.
 			if (!seen || status === null) return null
 
+			const mode = status.mode === "public" ? "public" : "lan"
 			const tone = status.ok === true ? "dshwd_ok" : "dshwd_warn"
+
+			// The switch is manual rather than inferred, because inferring it was
+			// tried in this project and does not work: broadcast only reaches the local
+			// network, and routers that drop traffic between wireless clients are
+			// common enough that one was measured on this network. A decision that
+			// depends on a packet the network may discard is a decision that silently
+			// goes the wrong way, so the user says where they are.
+			const button = (value, text, title) =>
+				react.createElement(
+					"button",
+					{
+						className: "dshwd_mode" + (mode === value ? " dshwd_modeOn" : ""),
+						onClick: () => press(value),
+						disabled: busy || mode === value,
+						title,
+					},
+					text,
+				)
+
 			return react.createElement(
 				"div",
 				{ className: "dshwd_row" },
@@ -124,7 +197,13 @@ window.__ModuleLoader__.load({
 				react.createElement(
 					"span",
 					{ className: "dshwd_label", title: status.detail },
-					status.detail ?? "watch",
+					busy ? "switching relay..." : status.detail ?? "watch",
+				),
+				react.createElement(
+					"span",
+					{ className: "dshwd_modes" },
+					button("lan", "LAN", "Use the relay on this network"),
+					button("public", "Public", "Use the public relay"),
 				),
 			)
 		}
