@@ -1,46 +1,152 @@
 /**
  * dsh-watch-dsh, browser half.
  *
- * ## Why this registers nothing
+ * Shows the watch link's status under the composer, and lets the user switch
+ * between the LAN and public relays.
  *
- * An earlier version contributed a status line to `conversation.composer.bar`. It
- * stopped DSH from starting, three times, with this in the desktop app's crash log:
+ * ## What this follows, and why
+ *
+ * Three earlier versions stopped DSH from starting. The crash log always named the
+ * conversation plugin:
  *
  *   Error: web boot: 8 entries did not activate
  *   @deepseek-ai/dsh-client-ui-conversation: failed
  *   @deepseek-ai/dsh-client-ui-chat: pending (waiting for service: uiConversation)
- *   ... six more pending on uiConversation
  *
- * A plugin that contributes to a slot is *waited on* by whatever renders that
- * slot. When this one could not complete, the conversation plugin could not
- * either, and everything that needs `uiConversation` fell over behind it. The
- * report named the conversation plugin, so the cause sat three steps away from
- * the symptom.
+ * It was the victim, not the cause: a plugin that registers into a slot is waited
+ * on by whatever renders that slot, so a contribution that cannot complete takes
+ * the renderer down with it.
  *
- * A status line is not worth that, and nothing here is. This file now registers no
- * slot, contributes no component, and cannot be waited on for anything. The host
- * half - the relay, the bridge, the mode switch, the status endpoint - does not
- * depend on it and keeps working.
+ * This version follows `dsh-api-dashboard` (MIT), a working third-party plugin for
+ * the same shell, on the three points where this one differed from it:
  *
- * ## What replaces it
+ *   - it registers into `conversation.composer.dock`, not `...composer.bar`;
+ *   - its `dsh.client.inject` names client plugins, not host services, so the
+ *     shell holds it back until the renderer it depends on is present rather than
+ *     leaving it pending forever;
+ *   - it is installed with a `node_modules` symlink beside the sources, which the
+ *     host resolves peer dependencies through.
  *
- * The status is served over HTTP on loopback (status-server.js) and written to
- * `.state/dsh-status.json`, so it can be read with a browser tab, `curl`, or the
- * file itself. That is how it should have been surfaced from the start, rather
- * than by reaching into someone else's UI.
+ * ## Still guarded
+ *
+ * The component returns null when it has no status to show, so a fetch that never
+ * succeeds leaves the composer untouched rather than an empty row in it.
  */
 window.__ModuleLoader__.load({
 	id: "dsh-watch-dsh",
-	factory: () => {
-		const module = { exports: {} }
-		const exports = module.exports
+	factory: (require) => {
+		var module = { exports: {} }
+		var exports = module.exports
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" })
 
-		/** Nothing to wait for. The empty list is the point, not an omission. */
-		const inject = []
+		let react = require("react")
 
-		/** No slots, no components, no effects, nothing to fail. */
-		function apply() {}
+		/** Poll cadence. A status light, not a progress bar. */
+		const POLL_MS = 3000
+
+		/** Where the host half listens. It prefers the first and scans upward. */
+		const STATUS_PORTS = [8799, 8800, 8801, 8802, 8803, 8804, 8805, 8806]
+
+		function candidateUrls() {
+			const configured = globalThis.__DSH_WATCH_STATUS__
+			if (configured) return [String(configured)]
+			return STATUS_PORTS.map((port) => "http://127.0.0.1:" + port + "/")
+		}
+
+		async function readStatus() {
+			for (const url of candidateUrls()) {
+				try {
+					const response = await fetch(url, { credentials: "omit", cache: "no-store" })
+					if (!response.ok) continue
+					return await response.json()
+				} catch {
+					// Try the next port. On the desktop shell the page is served from a
+					// custom scheme, so a loopback fetch is cross-origin and depends on
+					// the host half sending the header it does.
+				}
+			}
+			return null
+		}
+
+		const CSS = [
+			".dshwd_row{display:flex;align-items:center;gap:8px;min-height:24px;padding:0 2px;",
+			"font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}",
+			".dshwd_dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-tertiary)}",
+			".dshwd_ok{background:#2ea043}",
+			".dshwd_warn{background:#d29922}",
+			".dshwd_label{font-family:var(--dsw-font-mono);white-space:nowrap;overflow:hidden;",
+			"text-overflow:ellipsis;min-width:0;flex:1}",
+		].join("")
+
+		function ensureCss() {
+			if (typeof document === "undefined") return
+			const id = "dsh-watch-dsh/status.css"
+			if (document.querySelector('style[data-plugin-css="' + id + '"]') !== null) return
+			const tag = document.createElement("style")
+			tag.dataset.plugin = "dsh-watch-dsh"
+			tag.dataset.pluginCss = id
+			tag.textContent = CSS
+			document.head.appendChild(tag)
+		}
+
+		function WatchStatus() {
+			const [status, setStatus] = react.useState(null)
+			const [seen, setSeen] = react.useState(false)
+
+			react.useEffect(() => {
+				let live = true
+				ensureCss()
+
+				const tick = async () => {
+					const next = await readStatus()
+					if (!live) return
+					setStatus(next)
+					setSeen(true)
+				}
+
+				tick()
+				const timer = setInterval(tick, POLL_MS)
+				return () => {
+					live = false
+					clearInterval(timer)
+				}
+			}, [])
+
+			// Nothing readable: contribute nothing at all. An absent status line is a
+			// small loss; a composer that waits on this is not.
+			if (!seen || status === null) return null
+
+			const tone = status.ok === true ? "dshwd_ok" : "dshwd_warn"
+			return react.createElement(
+				"div",
+				{ className: "dshwd_row" },
+				react.createElement("span", { className: "dshwd_dot " + tone }),
+				react.createElement(
+					"span",
+					{ className: "dshwd_label", title: status.detail },
+					status.detail ?? "watch",
+				),
+			)
+		}
+
+		/**
+		 * Client plugins this half needs before it can run.
+		 *
+		 * Named as packages, matching the working third-party plugin: the shell then
+		 * starts this after the conversation UI exists, instead of leaving it
+		 * pending and holding that UI's slot registration open.
+		 */
+		const inject = ["@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-conversation"]
+
+		function apply(ctx) {
+			if (typeof ctx?.slots?.inject !== "function") return
+			ctx.slots.inject("conversation.composer.dock", () =>
+				ctx.slots.register(
+					{ name: "conversation.composer.dock", id: "watch-dsh-status", order: 90 },
+					WatchStatus,
+				),
+			)
+		}
 
 		exports.apply = apply
 		exports.inject = inject
