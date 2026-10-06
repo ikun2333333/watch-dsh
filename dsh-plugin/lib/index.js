@@ -31,6 +31,7 @@ import { appendFileSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
 
 import { WatchLink } from './supervisor.js'
 import { startStatusServer } from './status-server.js'
+import { findHarnessUrl } from './find-harness.js'
 
 /** Where the watch-dsh checkout lives, unless the config says otherwise. */
 const DEFAULT_REPO = 'C:\\Users\\q1375\\Documents\\watch-dsh'
@@ -72,20 +73,27 @@ export function apply(ctx, config) {
       tokenFile: join(repo, '.state', 'relay-token'),
       mode: config?.mode,
       publicRelayUrl: config?.publicRelayUrl,
-      // The bridge has to be told which Harness to talk to, and the port cannot be
-      // read from a web-server service the desktop shell does not have. DSH puts
-      // it in the environment for exactly this kind of child, and the bridge
-      // already understands the variable, so it is passed through rather than
-      // derived.
-      dshUrl: dshUrlFromEnv(config?.dshUrl),
+      // Filled in below by a probe; the bridge cannot start correctly without it.
+      dshUrl: null,
     })
 
-    if (link.dshUrl === null) {
-      log('DSH_WEB_URL is not set; the bridge will not find the Harness')
-    }
-
-    link.start()
-    log(`started: mode=${link.mode} relay=${link.bridgeRelayUrl()}`)
+    // The Harness address is found before the bridge is started, because a bridge
+    // started without it exits at once and reports a connection refused against a
+    // port nothing is listening on - which reads as a broken plugin rather than as
+    // a missing address. Detection is asynchronous, so the relay can come up while
+    // it runs.
+    findHarnessUrl(config?.dshUrl, log)
+      .then((url) => {
+        link.dshUrl = url ?? dshUrlFromEnv(undefined)
+        link.start()
+        log(`started: mode=${link.mode} relay=${link.bridgeRelayUrl()} harness=${link.dshUrl ?? '(unknown)'}`)
+      })
+      .catch((error) => {
+        log(`could not start the link: ${error?.message ?? String(error)}`)
+        // Started anyway: the status endpoint then reports a bridge that is not
+        // running, which is a better answer than no status at all.
+        link.start()
+      })
 
     // Status goes three places, deliberately:
     //   - a loopback endpoint the browser half fetches (the only one that reaches

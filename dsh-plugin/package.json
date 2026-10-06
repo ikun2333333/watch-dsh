@@ -26,7 +26,8 @@
     "lib/index.js",
     "lib/client.js",
     "lib/supervisor.js",
-    "lib/status-server.js"
+    "lib/status-server.js",
+    "lib/find-harness.js"
   ],
   "license": "MIT"
 }
