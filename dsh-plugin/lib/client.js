@@ -30,24 +30,23 @@ window.__ModuleLoader__.load({
 		const POLL_MS = 3000
 
 		/**
-		 * Candidate URLs for the status file, most likely first.
+		 * Candidate URLs for the status document, most likely first.
 		 *
-		 * The host writes into the workspace's own state directory, and the shell's
-		 * URL does not map onto the filesystem in a way worth relying on, so several
-		 * shapes are tried and a miss is not an error - it means the bar stays
-		 * absent, which is the safe outcome.
+		 * The host half starts a listener of its own on a loopback port rather than
+		 * registering with the host's web server, because the desktop shell has no
+		 * such service - depending on it is what stopped DSH from starting once.
+		 * The first port is the one that listener prefers, and the rest cover its
+		 * scan when that port was already taken.
 		 *
-		 * `__DSH_WATCH_STATUS__` is honoured first so the host can name the exact
-		 * URL through an index injection rather than leaving it to be guessed.
+		 * `__DSH_WATCH_STATUS__` is honoured first so a host able to name the exact
+		 * URL does not leave it to be guessed.
 		 */
 		function candidateUrls() {
 			const configured = globalThis.__DSH_WATCH_STATUS__
-			const list = configured ? [String(configured)] : []
-			return list.concat([
-				"/watch-dsh/status.json",
-				"/.state/dsh-status.json",
-				"./.state/dsh-status.json",
-			])
+			if (configured) return [String(configured)]
+			return [8799, 8800, 8801, 8802, 8803, 8804, 8805, 8806].map(
+				(port) => "http://127.0.0.1:" + port + "/",
+			)
 		}
 
 		async function readStatus() {

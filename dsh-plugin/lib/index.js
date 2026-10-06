@@ -30,6 +30,7 @@ import { join, dirname } from 'node:path'
 import { appendFileSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
 
 import { WatchLink } from './supervisor.js'
+import { startStatusServer } from './status-server.js'
 
 /** Where the watch-dsh checkout lives, unless the config says otherwise. */
 const DEFAULT_REPO = 'C:\\Users\\q1375\\Documents\\watch-dsh'
@@ -86,9 +87,16 @@ export function apply(ctx, config) {
     link.start()
     log(`started: mode=${link.mode} relay=${link.bridgeRelayUrl()}`)
 
-    // Status is published on a timer rather than through a service, because the
-    // browser half cannot reach this process any other way that works in both
-    // shells. Unref'd so it can never keep the process alive.
+    // Status goes three places, deliberately:
+    //   - a loopback endpoint the browser half fetches (the only one that reaches
+    //     the UI, and the only one this plugin owns end to end);
+    //   - a file, so a failure can be read without a working UI;
+    //   - the log, as a last resort.
+    const status = () => {
+      const snapshot = link.snapshot()
+      return { ok: snapshot.blocked === null && snapshot.bridge.running, detail: describe(snapshot), ...snapshot, at: Date.now() }
+    }
+
     const statusFile = join(repo, '.state', 'dsh-status.json')
     const tick = () => {
       try {
@@ -101,10 +109,23 @@ export function apply(ctx, config) {
     const timer = setInterval(tick, WRITE_INTERVAL_MS)
     timer.unref?.()
 
+    // Started without being awaited into apply: the listener is asynchronous, and
+    // a plugin that blocks its own activation on a socket is a plugin that can
+    // hold up whatever waits for it.
+    let statusServer = null
+    startStatusServer(status, log)
+      .then((server) => {
+        statusServer = server
+      })
+      .catch((error) => {
+        log(`status endpoint failed: ${error?.message ?? String(error)}`)
+      })
+
     ctx.effect(
       () => () => {
         clearInterval(timer)
         link.stop()
+        statusServer?.close?.()
         log('stopped')
       },
       'watch-dsh: stop the relay and bridge',

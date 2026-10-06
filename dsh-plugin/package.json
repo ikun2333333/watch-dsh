@@ -24,7 +24,9 @@
   },
   "files": [
     "lib/index.js",
-    "lib/client.js"
+    "lib/client.js",
+    "lib/supervisor.js",
+    "lib/status-server.js"
   ],
   "license": "MIT"
 }
