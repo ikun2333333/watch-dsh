@@ -353,18 +353,29 @@ export class WatchLink {
   }
 
   /**
-   * Restart everything.
+   * Restart the bridge so it attaches to whichever relay the mode selects.
    *
-   * Asynchronous, and awaiting it matters: killing the relay and starting it
-   * again in the same tick leaves it unable to bind, because the port is still
-   * held by a process that has been signalled but has not exited. The symptom is
-   * a switch that reports success and then a relay that is not running.
+   * Only the bridge. The relay listens on a fixed port and does not care which
+   * mode is selected - a watch on the same Wi-Fi reaches it either way - so
+   * stopping it cuts the connection a LAN watch is using for no reason at all.
+   * That was the bug: switching to public took the local relay down with it, and a
+   * watch connected over the LAN was dropped and left showing offline while the
+   * switch was in progress.
+   *
+   * Asynchronous, and awaiting it matters: killing a child and starting it again in
+   * the same tick leaves it unable to bind, because the port is still held by a
+   * process that has been signalled but has not exited. The symptom is a switch
+   * that reports success and then a relay that is not running.
    */
   async restart() {
     if (this.restarting) return this.restarting
     this.restarting = (async () => {
-      await this.stop()
-      this.start()
+      await this.bridge.stop()
+      // The relay is started here too, in case it is somehow not up: starting a
+      // running child is a no-op, and a switch is a poor moment to discover that
+      // the relay never came up.
+      this.relay.start()
+      this.startBridge()
     })().finally(() => {
       this.restarting = null
     })
@@ -494,14 +505,17 @@ function readLiveStatus(stateDir) {
     const at = typeof parsed?.at === 'number' ? parsed.at : 0
     if (Date.now() - at > LIVE_STATUS_MAX_AGE_MS) return null
 
-    // `watches` is the count the bridge maintains; `watchId` is only known while a
-    // connection is open, so the two are reported consistently rather than one
-    // being trusted over the other.
-    const watches = typeof parsed?.watches === 'number' ? parsed.watches : 0
+    // `connected` is the count that means something: watches that completed a
+    // handshake on this link. `watches` counts everyone the relay announced, and
+    // after this bridge reattaches to another relay that includes watches which
+    // are attached to a *different* relay and will never speak to this one - which
+    // is exactly how the status line came to claim a connection while the watch's
+    // own screen said the PC was not running.
+    const connected = typeof parsed?.connected === 'number' ? parsed.connected : 0
     return {
       pcId: typeof parsed?.pcId === 'string' ? parsed.pcId : null,
-      watchId: watches > 0 ? (typeof parsed?.watchId === 'string' ? parsed.watchId : 'a watch') : null,
-      watches,
+      watchId: connected > 0 ? (typeof parsed?.watchId === 'string' ? parsed.watchId : 'a watch') : null,
+      watches: connected,
       relay: typeof parsed?.relay === 'string' ? parsed.relay : undefined,
       harness: typeof parsed?.harness === 'string' ? parsed.harness : undefined,
       at,

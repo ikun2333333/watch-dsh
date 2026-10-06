@@ -162,6 +162,17 @@ export class Bridge {
   #descriptors;
   #sessions = new Map();
   #watches = new Set();
+  /**
+   * Watches that have completed a handshake on this link.
+   *
+   * Distinct from `#watches`, which holds everyone the relay has announced. The
+   * relay announces watches for a pc id, and a watch may be attached to a
+   * *different* relay that holds the same id - which is what happens to a LAN watch
+   * the moment this bridge reattaches to the public relay. Those announced watches
+   * never talk to this link, so a count of them is not evidence of anything
+   * reachable, and it is this set that answers "is a watch actually connected".
+   */
+  #handshaken = new Set();
   #secret;
   #pcId;
   #socket;
@@ -192,7 +203,14 @@ export class Bridge {
 
   /** Current bridge status for diagnostics and the watch's status line. */
   get status() {
-    return { ...this.#status, sessions: this.#sessions.size, watches: this.#watches.size };
+    return {
+      ...this.#status,
+      sessions: this.#sessions.size,
+      // `watches` keeps its old meaning - everyone the relay has announced - and
+      // `connected` is the number that proves a watch is reachable on this link.
+      watches: this.#watches.size,
+      connected: this.#handshaken.size,
+    };
   }
 
   /**
@@ -469,8 +487,9 @@ export class Bridge {
         removed = true;
       }
     }
-    // This is the case the log could not express: the watch is gone, so the status
-    // file must stop saying it is here.
+    // Forgetting the handshake matters as much as forgetting the announcement: a
+    // watch that has left must stop counting towards connectivity immediately.
+    this.#handshaken.delete(watchId);
     if (removed) this.#publishStatus();
   }
 
@@ -483,6 +502,13 @@ export class Bridge {
           // Sealed from here on: the watch holds the pairing secret from its
           // imported config, so anything that reaches this point has proven it
           // holds that secret and is genuinely this user's watch.
+          //
+          // Recorded before replying, because the handshake is the proof: a watch
+          // that the relay merely announced has not sent anything, and a watch on
+          // another relay never will. This is what makes the status line's answer
+          // about connectivity mean something.
+          this.#handshaken.add(watch.id);
+          this.#publishStatus();
           await watch.ok(id, {
             protocol: PROTOCOL_VERSION,
             bridge: 'watch-dsh/1',
