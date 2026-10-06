@@ -130,13 +130,21 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * Client plugins this half needs before it can run.
+		 * The Cordis services this half needs, by *service* name.
 		 *
-		 * Named as packages, matching the working third-party plugin: the shell then
-		 * starts this after the conversation UI exists, instead of leaving it
-		 * pending and holding that UI's slot registration open.
+		 * `slots` and nothing else: registering into a slot is the only thing this
+		 * does.
+		 *
+		 * This list previously held package names, which was the bug that stopped
+		 * DSH from starting - the shell waited for a service called
+		 * `@deepseek-ai/dsh-client-locale`, which does not exist and never would, so
+		 * the plugin stayed pending forever. The two are different lists with
+		 * different vocabularies, and the shipped plugins show it plainly:
+		 * `dsh-client-resources` has `const inject = ["slots"]` in its code and
+		 * `["@deepseek-ai/dsh-client-ui-renderer"]` in its manifest. Service names
+		 * here; package names there.
 		 */
-		const inject = ["@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-conversation"]
+		const inject = ["slots"]
 
 		function apply(ctx) {
 			if (typeof ctx?.slots?.inject !== "function") return
