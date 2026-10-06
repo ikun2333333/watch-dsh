@@ -111,15 +111,25 @@ export function apply(ctx, config) {
     //     the UI, and the only one this plugin owns end to end);
     //   - a file, so a failure can be read without a working UI;
     //   - the log, as a last resort.
+    //
+    // `ok` means a watch is attached and reachable, not that two processes are
+    // alive. It used to mean the latter, so the status line was green whenever the
+    // computer was on - a light that is on whenever the machine is on reports
+    // nothing.
     const status = () => {
       const snapshot = link.snapshot()
-      return { ok: snapshot.blocked === null && snapshot.bridge.running, detail: describe(snapshot), ...snapshot, at: Date.now() }
+      return {
+        ok: snapshot.blocked === null && snapshot.bridge.running && snapshot.bridge.watchCount > 0,
+        detail: describe(snapshot),
+        ...snapshot,
+        at: Date.now(),
+      }
     }
 
     const statusFile = join(repo, '.state', 'dsh-status.json')
     const tick = () => {
       try {
-        writeStatus(statusFile, link)
+        writeStatus(statusFile, status())
       } catch (error) {
         log(`could not write status: ${error?.message ?? String(error)}`)
       }
@@ -287,18 +297,13 @@ function makeLog(repo) {
 /**
  * Publish the status for the browser half to read.
  *
- * Written to a temporary file and renamed, so a reader never sees a half-written
- * document - the browser polls this file, and a partial read would surface as a
- * parse error rather than as slightly stale data.
+ * Takes the same object the endpoint serves, rather than building its own: two
+ * copies of the "is this connected" decision is how the file and the endpoint end
+ * up disagreeing about it, which is exactly the sort of thing a status light is
+ * supposed to settle. Written to a temporary file and renamed, so a reader never
+ * sees a half-written document.
  */
-function writeStatus(file, link) {
-  const snapshot = link.snapshot()
-  const payload = {
-    ok: snapshot.blocked === null && snapshot.bridge.running,
-    detail: describe(snapshot),
-    ...snapshot,
-    at: Date.now(),
-  }
+function writeStatus(file, payload) {
   const temp = `${file}.tmp`
   mkdirSync(dirname(file), { recursive: true })
   writeFileSync(temp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
@@ -314,6 +319,8 @@ function describe(snapshot) {
   if (!snapshot.relay.running) return 'relay is not running'
   if (!snapshot.bridge.running) return 'bridge is not running'
   if (snapshot.bridge.pcId === null) return 'bridge is starting'
-  if (snapshot.bridge.watchId === null) return `${snapshot.bridge.pcId}, no watch yet`
-  return `${snapshot.bridge.pcId}, watch ${snapshot.bridge.watchId} connected`
+  // The count decides this, not the id: the id comes from the bridge's live status
+  // and a count of zero is what "nothing is attached" actually means.
+  if (snapshot.bridge.watchCount === 0) return `${snapshot.bridge.pcId}, no watch connected`
+  return `${snapshot.bridge.pcId}, watch connected`
 }

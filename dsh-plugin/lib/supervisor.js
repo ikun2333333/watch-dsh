@@ -417,9 +417,15 @@ export class WatchLink {
   snapshot() {
     const relayUrl = this.bridgeRelayUrl()
     const bridgeAttached = this.bridge.find(/attached to relay as pc "([^"]+)"/)
-    const watchAttached = this.bridge.find(/watch ([\w-]+) attached/)
     const linkAlive = this.bridge.find(/relay link alive/)
     const deadLink = this.bridge.find(/relay stopped answering/)
+
+    // Whether a watch is attached is read from the bridge's live status, not from
+    // its log. A log is append-only: "watch x attached" is written once and stays
+    // in the ring buffer after the watch leaves, so the previous version of this
+    // reported a connected watch forever - which is exactly what the status line
+    // showed. The file is rewritten whenever the set of attached watches changes.
+    const live = readLiveStatus(this.stateDir)
 
     return {
       mode: this.mode,
@@ -441,14 +447,61 @@ export class WatchLink {
         running: this.bridge.running,
         pid: this.bridge.process?.pid ?? null,
         spawnFailed: this.bridge.spawnFailed,
-        pcId: bridgeAttached?.[1] ?? null,
-        watchId: watchAttached?.[1] ?? null,
-        heartbeat: linkAlive ? 'alive' : deadLink ? 'dead' : 'unknown',
+        pcId: live?.pcId ?? bridgeAttached?.[1] ?? null,
+        /** Null unless a watch is attached *now*. */
+        watchId: live?.watchId ?? null,
+        watchCount: live?.watches ?? 0,
+        heartbeat: live?.relay === undefined
+          ? linkAlive ? 'alive' : deadLink ? 'dead' : 'unknown'
+          : live.relay,
       },
       log: {
         relay: this.relay.lines.slice(-8),
         bridge: this.bridge.lines.slice(-12),
       },
     }
+  }
+}
+
+/**
+ * How old the bridge's published status may be before it is disbelieved.
+ *
+ * The bridge republishes whenever the set of attached watches changes, so a file
+ * untouched for far longer than this means the writer is gone - a killed bridge
+ * leaves its last status behind, and reading it would report a watch that is no
+ * longer attached, which is the bug this whole mechanism exists to fix.
+ */
+const LIVE_STATUS_MAX_AGE_MS = 90_000
+
+/**
+ * Read the bridge's live status, if it is recent enough to mean anything.
+ *
+ * @returns the parsed document, or null when there is none or it is stale.
+ */
+function readLiveStatus(stateDir) {
+  const path = join(stateDir, 'watch-status.json')
+  try {
+    if (!existsSync(path)) return null
+    const raw = readFileSync(path, 'utf8')
+    const parsed = JSON.parse(raw)
+    const at = typeof parsed?.at === 'number' ? parsed.at : 0
+    if (Date.now() - at > LIVE_STATUS_MAX_AGE_MS) return null
+
+    // `watches` is the count the bridge maintains; `watchId` is only known while a
+    // connection is open, so the two are reported consistently rather than one
+    // being trusted over the other.
+    const watches = typeof parsed?.watches === 'number' ? parsed.watches : 0
+    return {
+      pcId: typeof parsed?.pcId === 'string' ? parsed.pcId : null,
+      watchId: watches > 0 ? (typeof parsed?.watchId === 'string' ? parsed.watchId : 'a watch') : null,
+      watches,
+      relay: typeof parsed?.relay === 'string' ? parsed.relay : undefined,
+      harness: typeof parsed?.harness === 'string' ? parsed.harness : undefined,
+      at,
+    }
+  } catch {
+    // A missing, half-written or malformed file is simply "no live status"; the
+    // caller falls back to what it can see for itself.
+    return null
   }
 }

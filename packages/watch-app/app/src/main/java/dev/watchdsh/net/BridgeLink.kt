@@ -87,8 +87,17 @@ data class ConnectionConfig(
     }
 }
 
-/** Connection lifecycle as the UI shows it. */
-enum class LinkState { Disconnected, Connecting, Connected, Unauthorized, Failed }
+/**
+ * Connection lifecycle as the UI shows it.
+ *
+ * [RelayOnly] exists because a reachable relay is not a reachable computer. The
+ * public relay is a Cloudflare Worker that is always up, so a watch can open a
+ * socket to it - and did, which is why this used to report success - while the PC
+ * end is switched off or has no bridge attached. The relay says so in the `ready`
+ * frame it sends on connect (`pcOnline`), and treating that as "connected" is what
+ * made the watch claim success while the PC was not running at all.
+ */
+enum class LinkState { Disconnected, Connecting, RelayOnly, Connected, Unauthorized, Failed }
 
 /** One decoded event from the bridge. */
 sealed interface BridgeEvent {
@@ -162,6 +171,16 @@ class BridgeLink(
      * nothing the watch sends has to carry it.
      */
     private var relayId: String? = null
+
+    /**
+     * Whether the relay says the configured PC is attached.
+     *
+     * Null until the `ready` frame arrives, which is the relay's own statement
+     * about the other end. Kept because it is the only signal that distinguishes
+     * "this watch reached the relay" from "this watch reached its computer", and
+     * the second is the one a status line is about.
+     */
+    private var pcOnline: Boolean? = null
 
     /**
      * Observes link milestones, including transport failures.
@@ -256,6 +275,10 @@ class BridgeLink(
     private fun openSocket() {
         val config = this.config ?: return
         _state.value = LinkState.Connecting
+        // Cleared with the socket: the previous connection's answer about the PC
+        // says nothing about this attempt, and a stale `true` would let the status
+        // line claim a connection that was never re-established.
+        pcOnline = null
         // The token is redacted: this observation is recorded on the device, where
         // `adb pull` can retrieve it.
         observer?.invoke("opening ${config.redactedWatchUrl()}")
@@ -266,10 +289,29 @@ class BridgeLink(
                 // A watch suspends its radio seconds into an idle connection, so
                 // the lock is taken for exactly as long as a socket is open.
                 wifiKeeper?.acquire()
-                _state.value = LinkState.Connected
+                // Deliberately not Connected: an open socket to the relay says
+                // nothing about the computer at the other end, and the public relay
+                // is always up. The state is settled by the handshake below.
+                _state.value = LinkState.Connecting
                 scope.launch {
+                    // The handshake is what proves the bridge is there: it round
+                    // trips to the PC end and back. Its failure used to be swallowed
+                    // by runCatching, which left the state at Connected from the
+                    // line above - the whole reason a watch could show success with
+                    // the PC switched off.
                     runCatching { handshake() }
-                        .onFailure { observer?.invoke("onOpen: handshake threw ${it.message}") }
+                        .onSuccess {
+                            pcOnline = true
+                            _state.value = LinkState.Connected
+                            observer?.invoke("handshake ok: connected")
+                        }
+                        .onFailure { error ->
+                            observer?.invoke("handshake failed: ${error.message}")
+                            // A relay that says the PC is attached, but a handshake
+                            // that never came back, is not "connected" either.
+                            _state.value = LinkState.RelayOnly
+                            scheduleReconnect()
+                        }
                 }
             }
 
@@ -428,9 +470,21 @@ class BridgeLink(
         val envelope = runCatching { ProtocolJson.decodeFromString<Envelope>(text) }.getOrNull() ?: return
 
         // Transport frames are the relay's own, and the only frames that are not
-        // sealed. The `ready` frame carries the id this link records for logs.
+        // sealed. The `ready` frame carries the id this link records for logs, and
+        // the relay's own answer to "is the configured PC attached".
         if (envelope.t != null && !envelope.isSealed) {
-            if (envelope.t == "ready") relayId = envelope.from
+            if (envelope.t == "ready") {
+                relayId = envelope.from
+                // Acted on immediately rather than waiting for the handshake's
+                // 30-second timeout: when the relay already says the PC is absent,
+                // that is what the status line should say, now.
+                val online = envelope.pcOnline
+                pcOnline = online
+                if (online == false) {
+                    observer?.invoke("relay reports pc offline")
+                    _state.value = LinkState.RelayOnly
+                }
+            }
             return
         }
 

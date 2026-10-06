@@ -19,6 +19,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DshClient, loadBrowserSessionSecret } from './dsh-client.mjs';
 import { loadDescriptors } from './descriptors.mjs';
@@ -160,14 +161,17 @@ export class Bridge {
   #eventsClientId;
   #status = { harness: 'connecting', relay: 'disconnected', detail: '' };
   #closed = false;
+  /** Where to publish live status, or null to publish nothing. */
+  #stateDir;
 
   /**
-   * @param options - Harness base URL, the pairing secret shared with watches, and the pc id this bridge answers to.
+   * @param options - Harness base URL, the pairing secret shared with watches, the pc id this bridge answers to, and optionally the directory to publish live status into.
    */
-  constructor({ dshHome, baseUrl, pairingSecret, pcId, descriptors }) {
+  constructor({ dshHome, baseUrl, pairingSecret, pcId, descriptors, stateDir }) {
     this.#descriptors = descriptors ?? loadDescriptors(dshHome);
     this.#secret = pairingSecret;
     this.#pcId = pcId;
+    this.#stateDir = stateDir ?? null;
     this.#client = new DshClient({
       baseUrl,
       secret: loadBrowserSessionSecret(dshHome),
@@ -180,9 +184,44 @@ export class Bridge {
     return { ...this.#status, sessions: this.#sessions.size, watches: this.#watches.size };
   }
 
+  /**
+   * Publish the live status where the PC end can read it.
+   *
+   * The relay and bridge logs were the only record of whether a watch was attached,
+   * and a log is append-only: "watch x attached" stays in the ring buffer after the
+   * watch is gone, so anything reading it reports a connection that no longer
+   * exists. This is the same numbers the watch is sent, written out at the moment
+   * they change, so a status light has a live answer instead of a historical one.
+   *
+   * Failures are ignored on purpose: a status file is a convenience, and a bridge
+   * that refused to run because it could not write one would be worse than a status
+   * light that says "unknown".
+   */
+  #publishStatus() {
+    if (this.#stateDir === null) return;
+    try {
+      mkdirSync(this.#stateDir, { recursive: true });
+      const body = JSON.stringify({
+        ...this.status,
+        pcId: this.#pcId,
+        at: Date.now(),
+      });
+      // Written via a temporary file and renamed, so a reader never sees a partial
+      // document - the poller runs every couple of seconds and would otherwise
+      // eventually read a half-written one.
+      const target = join(this.#stateDir, 'watch-status.json');
+      const temporary = `${target}.tmp`;
+      writeFileSync(temporary, body, 'utf8');
+      renameSync(temporary, target);
+    } catch {
+      // See above: not worth failing over.
+    }
+  }
+
   /** Set the status and tell every watch. */
   async #setStatus(patch) {
     this.#status = { ...this.#status, ...patch };
+    this.#publishStatus();
     await this.broadcast(event(EVENTS.STATUS, { status: this.status }));
   }
 
@@ -378,6 +417,9 @@ export class Bridge {
     const watch = new WatchLink(this.#secret, socket, watchId);
     watch.onCommand = (frame) => this.#onCommand(watch, frame);
     this.#watches.add(watch);
+    // Republished before the async sends below, because the attach is the change
+    // the status file is for.
+    this.#publishStatus();
     void (async () => {
       await watch.send(event(EVENTS.STATUS, { status: this.status }));
       await watch.send(event(EVENTS.SESSIONS, { sessions: this.#sessionList() }));
@@ -393,9 +435,16 @@ export class Bridge {
    * @param watchId - relay-assigned identity for the watch.
    */
   detachWatch(watchId) {
+    let removed = false;
     for (const watch of this.#watches) {
-      if (watch.id === watchId) this.#watches.delete(watch);
+      if (watch.id === watchId) {
+        this.#watches.delete(watch);
+        removed = true;
+      }
     }
+    // This is the case the log could not express: the watch is gone, so the status
+    // file must stop saying it is here.
+    if (removed) this.#publishStatus();
   }
 
   /** Resolve one watch command. */

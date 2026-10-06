@@ -244,7 +244,10 @@ if (args['write-config'] !== undefined) {
 }
 
 const descriptors = loadDescriptors(dshHome);
-const bridge = new Bridge({ dshHome, baseUrl, pairingSecret: pairing, pcId, descriptors });
+// `stateDir` is passed so the bridge can publish its live status for whoever is
+// watching the PC end. Without it the only record of whether a watch is attached
+// was the log, and a log line saying a watch attached stays there after it leaves.
+const bridge = new Bridge({ dshHome, baseUrl, pairingSecret: pairing, pcId, descriptors, stateDir });
 await bridge.start();
 
 // The values the watch needs are printed once, together. There is no broadcast and

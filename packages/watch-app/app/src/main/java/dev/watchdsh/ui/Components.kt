@@ -59,6 +59,9 @@ fun CenteredMessage(
 fun LinkState.label(): String = when (this) {
     LinkState.Disconnected -> "Offline"
     LinkState.Connecting -> "Connecting…"
+    // Says which half is missing. "Connected" here was the bug: the relay is always
+    // up, so this state used to be reported while the PC was switched off.
+    LinkState.RelayOnly -> "PC not running"
     LinkState.Connected -> "Connected"
     LinkState.Unauthorized -> "Token rejected"
     LinkState.Failed -> "Cannot reach PC"
@@ -75,6 +78,10 @@ fun StatusCard(state: UiState, modifier: Modifier = Modifier) {
     val dot = when (state.link) {
         LinkState.Connected -> MaterialTheme.colorScheme.primary
         LinkState.Connecting -> MaterialTheme.colorScheme.tertiary
+        // Reached the relay but not the computer: worth its own colour rather than
+        // the error red, because nothing about the watch's own configuration is
+        // wrong and the PC being off is the ordinary case, not a failure.
+        LinkState.RelayOnly -> MaterialTheme.colorScheme.tertiary
         else -> MaterialTheme.colorScheme.error
     }
     Card(modifier = modifier.fillMaxWidth()) {
