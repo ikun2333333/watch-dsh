@@ -3,6 +3,7 @@ package dev.watchdsh.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.watchdsh.data.AsrEngine
 import dev.watchdsh.data.ConfigFile
 import dev.watchdsh.data.Diag
 import dev.watchdsh.data.Settings
@@ -224,6 +225,24 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
                     pcId = pcId.trim(),
                 ),
             )
+        }
+    }
+
+    /**
+     * Show a one-line message to the user.
+     *
+     * Used by voice input, which fails in ways the user has to be told about - the
+     * microphone is busy, the recognizer cannot be reached, nothing was heard - and
+     * none of those are worth a dialog or a screen of their own.
+     */
+    fun showNotice(message: String) {
+        _state.update { it.copy(notice = message) }
+    }
+
+    /** Persist the recognizer choice and its credentials. */
+    fun saveRecognizer(engine: AsrEngine, appId: String, apiKey: String, apiSecret: String) {
+        viewModelScope.launch {
+            settingsStore.saveAsr(engine, appId, apiKey, apiSecret)
         }
     }
 

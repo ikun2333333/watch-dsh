@@ -50,6 +50,10 @@ fun ManualSetupFields(
                     EditableField.RelayToken -> values.relayToken = text
                     EditableField.PairingSecret -> values.pairingSecret = text
                     EditableField.PcId -> values.pcId = text
+                    // This form only holds connection values; the recognizer's
+                    // credentials live in settings, which is the only place that
+                    // can switch engines as well as store them.
+                    EditableField.AsrAppId, EditableField.AsrApiKey, EditableField.AsrApiSecret -> Unit
                     EditableField.None -> Unit
                 }
             }

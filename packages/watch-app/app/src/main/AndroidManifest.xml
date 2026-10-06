@@ -20,10 +20,15 @@
          like it did nothing at all. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
-    <!-- No RECORD_AUDIO: voice input goes through the system input activity, which
-         transcribes in the platform's own process, so this app never opens the
-         microphone. No POST_NOTIFICATIONS either, because the app posts no
-         notifications yet. -->
+    <!-- Voice input has two paths. The default goes through the system input
+         activity, which transcribes in the platform's own process and needs no
+         permission here. The alternative records on the watch and streams the
+         audio to a recognizer the app controls, which is the only way to make
+         results appear while the user is still speaking - and that needs the
+         microphone. It is requested at the moment it is used, not at launch. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- No POST_NOTIFICATIONS: the app posts no notifications yet. -->
 
     <!-- The app is useful exactly when a PC is reachable, so it is not required
          to run on a watch without a network of its own. -->

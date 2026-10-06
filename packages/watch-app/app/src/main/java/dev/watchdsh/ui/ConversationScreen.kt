@@ -1,17 +1,20 @@
 package dev.watchdsh.ui
 
-import android.app.Activity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -27,7 +30,8 @@ import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.ScreenScaffold
 import androidx.wear.compose.material3.Text
 import dev.watchdsh.net.LinkState
-import dev.watchdsh.voice.VoiceInput
+import dev.watchdsh.voice.VoicePhase
+import dev.watchdsh.voice.rememberVoiceCapture
 
 /**
  * How many lines of one message to lay out.
@@ -57,20 +61,19 @@ fun ConversationScreen(
     onSend: (String) -> Unit,
     onCancel: () -> Unit,
     onVoiceResult: (String) -> Unit,
+    onVoiceMessage: (String) -> Unit,
     onAllow: (String) -> Unit,
     onReject: (String) -> Unit,
 ) {
     val listState = rememberScalingLazyListState()
 
-    // The system input activity handles both voice and typing and returns the
-    // recognized text as an activity result.
-    val voiceLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            VoiceInput.extractText(result.data)?.let(onVoiceResult)
-        }
-    }
+    // Voice input. Which recognizer runs is decided by the stored settings, so the
+    // screen does not choose a path - it only shows the phase it is told.
+    val voice = rememberVoiceCapture(
+        settings = state.settings,
+        onResult = onVoiceResult,
+        onMessage = { message -> onVoiceMessage(message) },
+    )
 
     // A pending approval blocks the agent, so it is presented as a dialog rather
     // than buried in the list.
@@ -162,20 +165,56 @@ fun ConversationScreen(
                 }
             }
 
+            // Words appearing while the user is still speaking. Without this the
+            // streaming recognizer looks identical to the system one until the very
+            // end, which hides the thing it was chosen for.
+            if (voice.phase == VoicePhase.Recording || voice.partial.isNotEmpty()) {
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp)) {
+                            Text(
+                                text = when {
+                                    voice.phase == VoicePhase.Transcribing -> "Recognizing..."
+                                    voice.partial.isNotEmpty() -> voice.partial
+                                    else -> "Listening..."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            if (voice.phase == VoicePhase.Recording) {
+                                LevelBar(voice.level)
+                            }
+                        }
+                    }
+                }
+            }
+
             item {
                 Button(
                     onClick = {
-                        if (state.activity.running) onCancel()
-                        else VoiceInput.launch(voiceLauncher, "Ask the agent")
+                        when {
+                            state.activity.running -> onCancel()
+                            voice.phase == VoicePhase.Recording -> voice.stop()
+                            voice.phase == VoicePhase.Transcribing -> Unit
+                            else -> voice.start()
+                        }
                     },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    if (state.activity.running) {
-                        Icon(AppIcons.Close, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text("Stop")
-                    } else {
-                        Icon(AppIcons.Mic, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text("Speak")
+                    when {
+                        state.activity.running -> {
+                            Icon(AppIcons.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text("Stop")
+                        }
+                        voice.phase == VoicePhase.Recording -> {
+                            Icon(AppIcons.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text("Finish")
+                        }
+                        voice.phase == VoicePhase.Transcribing -> Text("Working...")
+                        else -> {
+                            Icon(AppIcons.Mic, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text("Speak")
+                        }
                     }
                 }
             }
@@ -189,8 +228,37 @@ fun ConversationScreen(
     }
 }
 
-/** One message bubble; the streaming one is labelled as provisional. */
+/**
+ * A bar for the microphone level.
+ *
+ * It exists because "listening" and "the microphone is dead" look identical on a
+ * watch otherwise, and that ambiguity is exactly what a user hits when the
+ * microphone is held by another app or permission was never granted.
+ */
 @Composable
+private fun LevelBar(level: Float) {
+    val width = (level.coerceIn(0f, 1f) * 100).dp
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp)
+            .height(3.dp)
+            .clip(RoundedCornerShape(2.dp))
+            // Wear's ColorScheme has no surfaceVariant; a dimmed muted foreground
+            // is the same idea and exists in every Wear theme.
+            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)),
+    ) {
+        Box(
+            modifier = Modifier
+                .width(width)
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(2.dp))
+                .background(MaterialTheme.colorScheme.primary),
+        )
+    }
+}
+
+/** One message bubble; the streaming one is labelled as provisional. */@Composable
 private fun MessageCard(message: ChatMessage, streaming: Boolean = false) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp)) {

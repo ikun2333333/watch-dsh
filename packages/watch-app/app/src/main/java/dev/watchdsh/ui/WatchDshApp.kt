@@ -123,6 +123,8 @@ fun WatchDshApp() {
                             showSettings = false
                             screen = Screen.Sessions
                         },
+                        onSaveRecognizer = viewModel::saveRecognizer,
+                        onNotice = viewModel::showNotice,
                         onForget = {
                             viewModel.forgetConnection()
                             showSettings = false
@@ -148,6 +150,7 @@ fun WatchDshApp() {
                         onSend = viewModel::send,
                         onCancel = viewModel::cancel,
                         onVoiceResult = viewModel::send,
+                        onVoiceMessage = viewModel::showNotice,
                         onAllow = viewModel::allow,
                         onReject = viewModel::reject,
                     )
