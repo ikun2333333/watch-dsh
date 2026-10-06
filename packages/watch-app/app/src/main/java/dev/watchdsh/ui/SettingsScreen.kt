@@ -10,6 +10,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
@@ -75,9 +76,13 @@ fun SettingsScreen(
         pendingTarget = EditableField.None
     }
 
+    // Read once here: `edit` below is a plain function, so it cannot reach into a
+    // composable context itself.
+    val context = LocalContext.current
+
     fun edit(field: EditableField, prompt: String) {
         pendingTarget = field
-        VoiceInput.launch(inputLauncher, prompt)
+        VoiceInput.launch(inputLauncher, context, prompt)
     }
 
     ScreenScaffold(scrollState = listState) {

@@ -251,7 +251,6 @@ fun rememberVoiceCapture(
         VoiceInput.extractText(result.data)?.let { deliver(it) }
             ?: latestMessage("did not catch that, try again")
     }
-
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -263,8 +262,12 @@ fun rememberVoiceCapture(
         if (settings.asrReady) {
             if (hasRecordPermission(context)) beginRecording()
             else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        } else if (VoiceInput.isAvailable(context)) {
+            systemLauncher.launch(VoiceInput.createIntent(context, "Ask the agent"))
         } else {
-            systemLauncher.launch(VoiceInput.createIntent("Ask the agent"))
+            // Nothing on this watch can do it, and saying so beats a button that
+            // opens nothing.
+            latestMessage("this watch has no voice input; set up a streaming recognizer in settings")
         }
     }
 

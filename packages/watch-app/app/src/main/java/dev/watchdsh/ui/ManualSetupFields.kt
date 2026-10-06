@@ -10,6 +10,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.wear.compose.material3.Button
@@ -61,9 +62,13 @@ fun ManualSetupFields(
         target = EditableField.None
     }
 
+    // Read once here: `edit` below is a plain function, so it cannot reach into a
+    // composable context itself.
+    val context = LocalContext.current
+
     fun edit(field: EditableField, prompt: String) {
         target = field
-        VoiceInput.launch(launcher, prompt)
+        VoiceInput.launch(launcher, context, prompt)
     }
 
     androidx.compose.foundation.layout.Column(
