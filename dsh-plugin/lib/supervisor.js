@@ -424,7 +424,8 @@ export class WatchLink {
     // its log. A log is append-only: "watch x attached" is written once and stays
     // in the ring buffer after the watch leaves, so the previous version of this
     // reported a connected watch forever - which is exactly what the status line
-    // showed. The file is rewritten whenever the set of attached watches changes.
+    // showed. The file is refreshed every 20 seconds and on every change, so what
+    // it says is current and its age is only ever evidence about the writer.
     const live = readLiveStatus(this.stateDir)
 
     return {
@@ -451,9 +452,10 @@ export class WatchLink {
         /** Null unless a watch is attached *now*. */
         watchId: live?.watchId ?? null,
         watchCount: live?.watches ?? 0,
-        heartbeat: live?.relay === undefined
-          ? linkAlive ? 'alive' : deadLink ? 'dead' : 'unknown'
-          : live.relay,
+        // One source, now that the file is kept fresh: two sources for one field is
+        // how the status endpoint and the log ended up disagreeing about whether
+        // the relay link was up.
+        heartbeat: live?.relay ?? (linkAlive ? 'alive' : deadLink ? 'dead' : 'unknown'),
       },
       log: {
         relay: this.relay.lines.slice(-8),
@@ -470,8 +472,13 @@ export class WatchLink {
  * untouched for far longer than this means the writer is gone - a killed bridge
  * leaves its last status behind, and reading it would report a watch that is no
  * longer attached, which is the bug this whole mechanism exists to fix.
+ *
+ * The bridge republishes every 20 seconds whether or not anything changed, so age
+ * means exactly one thing: past three beats, the writer is gone. Without that
+ * heartbeat, "nothing has changed lately" and "the bridge was killed" both look
+ * like an old file, and the reader has to guess which it is looking at.
  */
-const LIVE_STATUS_MAX_AGE_MS = 90_000
+const LIVE_STATUS_MAX_AGE_MS = 60_000
 
 /**
  * Read the bridge's live status, if it is recent enough to mean anything.

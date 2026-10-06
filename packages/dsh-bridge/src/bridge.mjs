@@ -52,6 +52,15 @@ const JUNK_EVENT_TYPES = new Set([
 const MAX_FRAME_BYTES = 24_000;
 
 /**
+ * How often the published status is rewritten even when nothing changed.
+ *
+ * A reader can then treat age as evidence: older than a few beats means the bridge
+ * is not running, rather than meaning nothing has happened lately. Without it the
+ * two are indistinguishable and a reader has to guess which it is looking at.
+ */
+const HEARTBEAT_MS = 20_000;
+
+/**
  * One connected watch, or the placeholder that queues events until a watch
  * attaches. Sealing is per-connection because the direction key is per peer.
  */
@@ -163,6 +172,8 @@ export class Bridge {
   #closed = false;
   /** Where to publish live status, or null to publish nothing. */
   #stateDir;
+  /** Republish timer, so a reader can tell "unchanged" from "writer gone". */
+  #heartbeat = null;
 
   /**
    * @param options - Harness base URL, the pairing secret shared with watches, the pc id this bridge answers to, and optionally the directory to publish live status into.
@@ -237,6 +248,22 @@ export class Bridge {
     await this.refreshSessions();
     void this.#pumpEvents();
     await this.#setStatus({ harness: 'ready' });
+
+    // Keeps the published status provably fresh rather than merely present.
+    //
+    // Publishing only on change left the reader unable to tell "nothing has
+    // happened for a while" from "the writer is gone": both look like an old file.
+    // With a heartbeat the age means one thing - if it is older than a few beats,
+    // the bridge is not running - so the reader can trust a document that says no
+    // watch is attached instead of falling back to guessing.
+    this.#heartbeat = setInterval(() => this.#publishStatus(), HEARTBEAT_MS);
+    this.#heartbeat.unref?.();
+  }
+
+  /** Stop the status heartbeat. */
+  stopHeartbeat() {
+    if (this.#heartbeat !== null) clearInterval(this.#heartbeat);
+    this.#heartbeat = null;
   }
 
   /** Ask the Harness for the current session list. */
@@ -709,9 +736,24 @@ export class Bridge {
   /** Close every connection this bridge owns. */
   close() {
     this.#closed = true;
+    this.stopHeartbeat();
+    // Published once more on the way out, so the last thing the file says is that
+    // the bridge is gone rather than whatever it was saying while it was alive.
+    this.#status = { ...this.#status, relay: 'disconnected', harness: 'stopped' };
+    this.#publishStatus();
     this.#eventsController?.abort();
     for (const track of this.#sessions.values()) track.followController?.abort();
     this.#client.close();
+  }
+
+  /**
+   * Record whether the relay link is up, for the published status.
+   *
+   * Called by whatever owns the relay socket, which is the only place that knows.
+   */
+  setRelayState(state) {
+    this.#status = { ...this.#status, relay: state };
+    this.#publishStatus();
   }
 }
 

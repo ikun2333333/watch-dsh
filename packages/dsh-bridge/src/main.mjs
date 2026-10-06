@@ -341,6 +341,10 @@ function connect() {
     // Node timers would hold the process open on their own; this one is meant to.
     heartbeat.unref?.();
     console.log(`main: attached to relay as pc "${pcId}" (${relayUrl})`);
+    // Told rather than assumed: this socket is the only place that knows, and the
+    // published status otherwise kept saying "disconnected" for the life of a
+    // perfectly connected process - a status that contradicts the log beside it.
+    bridge.setRelayState('connected');
   });
 
   socket.on('pong', () => {
@@ -409,6 +413,7 @@ function connect() {
     stopHeartbeat();
     for (const watchId of socket.watchLinks.keys()) bridge.detachWatch(watchId);
     socket.watchLinks.clear();
+    bridge.setRelayState('disconnected');
     setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
   });
