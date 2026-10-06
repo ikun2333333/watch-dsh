@@ -148,9 +148,22 @@ window.__ModuleLoader__.load({
 
 		function apply(ctx) {
 			if (typeof ctx?.slots?.inject !== "function") return
+			// Deferred registration, which is required rather than stylistic:
+			// `conversation.composer.dock` is declared by an entry inside
+			// `conversation.composer.bar` and only exists once that entry mounts, so
+			// registering before it is live would target a slot that is not there.
+			//
+			// The id is unique and the order is the default band, which is what keeps
+			// this additive: a list slot's uniqueness is the (id, priority) pair, so a
+			// unique id cannot collide with the shipped occupant (`stats`).
 			ctx.slots.inject("conversation.composer.dock", () =>
 				ctx.slots.register(
-					{ name: "conversation.composer.dock", id: "watch-dsh-status", order: 90 },
+					{
+						name: "conversation.composer.dock",
+						id: "watch-dsh-status",
+						order: 90,
+						label: "Watch link",
+					},
 					WatchStatus,
 				),
 			)
