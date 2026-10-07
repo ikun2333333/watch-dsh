@@ -1,8 +1,5 @@
 package dev.watchdsh.ui
 
-import android.app.Activity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
@@ -10,19 +7,21 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.Text
-import dev.watchdsh.voice.VoiceInput
 
 /**
  * The setup form.
  *
- * Wear Material 3 ships no text field and a watch has no keyboard, so each value
- * is entered through the system input activity — the same activity dictation uses.
- * That is a lot of tapping, which is why the intended path is importing a config
+ * Each value is entered in the app's own editor rather than the system input
+ * activity that used to be launched here. Two reasons, and the second is the one
+ * that matters on a first run: the editor starts from the value already in the box,
+ * so correcting a mistyped character does not mean retyping forty-three of them, and
+ * it stays inside this app instead of handing the screen to another one.
+ *
+ * It is still a lot of tapping, which is why the intended path is importing a config
  * over adb instead: the bridge writes the file, one `adb push` installs it, and
  * nothing is typed. This form exists for the case where that is not convenient.
  *
@@ -37,52 +36,62 @@ fun ManualSetupFields(
 ) {
     val values = rememberConnectionDraft(state.settings)
 
-    // One launcher serves every row; the target says where the result goes.
+    /** Which value the editor is open on. */
     var target by rememberSaveable { mutableStateOf(EditableField.None) }
-    val launcher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val text = VoiceInput.extractText(result.data)
-            if (text != null) {
-                when (target) {
-                    EditableField.RelayUrl -> values.relayUrl = text
-                    EditableField.LanRelayUrl -> values.lanRelayUrl = text
-                    EditableField.RelayToken -> values.relayToken = text
-                    EditableField.PairingSecret -> values.pairingSecret = text
-                    EditableField.PcId -> values.pcId = text
-                    // This form only holds connection values; the recognizer's
-                    // credentials live in settings, which is the only place that
-                    // can switch engines as well as store them.
-                    EditableField.AsrAppId, EditableField.AsrApiKey, EditableField.AsrApiSecret -> Unit
-                    EditableField.None -> Unit
-                }
-            }
-        }
-        target = EditableField.None
+
+    fun currentValue(field: EditableField): String = when (field) {
+        EditableField.RelayUrl -> values.relayUrl
+        EditableField.LanRelayUrl -> values.lanRelayUrl
+        EditableField.RelayToken -> values.relayToken
+        EditableField.PairingSecret -> values.pairingSecret
+        EditableField.PcId -> values.pcId
+        // This form only holds connection values; the recognizer's credentials live
+        // in settings, which is the only place that can switch engines as well as
+        // store them.
+        EditableField.AsrAppId, EditableField.AsrApiKey, EditableField.AsrApiSecret, EditableField.None -> ""
     }
 
-    // Read once here: `edit` below is a plain function, so it cannot reach into a
-    // composable context itself.
-    val context = LocalContext.current
+    fun applyText(field: EditableField, text: String) {
+        when (field) {
+            EditableField.RelayUrl -> values.relayUrl = text
+            EditableField.LanRelayUrl -> values.lanRelayUrl = text
+            EditableField.RelayToken -> values.relayToken = text
+            EditableField.PairingSecret -> values.pairingSecret = text
+            EditableField.PcId -> values.pcId = text
+            EditableField.AsrAppId, EditableField.AsrApiKey, EditableField.AsrApiSecret, EditableField.None -> Unit
+        }
+    }
 
-    fun edit(field: EditableField, prompt: String) {
-        target = field
-        VoiceInput.launch(launcher, context, prompt)
+    if (target != EditableField.None) {
+        val editing = target
+        InputScreen(
+            title = editing.title(),
+            placeholder = editing.placeholder(),
+            confirmLabel = "Use",
+            initial = currentValue(editing),
+            settings = state.settings,
+            onVoiceMessage = {},
+            onSubmit = { text ->
+                applyText(editing, text)
+                target = EditableField.None
+            },
+            onCancel = { target = EditableField.None },
+        )
+        return
     }
 
     androidx.compose.foundation.layout.Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        EditableValue("Relay URL", values.relayUrl, "required") { edit(EditableField.RelayUrl, "Relay URL") }
+        EditableValue("Relay URL", values.relayUrl, "required") { target = EditableField.RelayUrl }
         EditableValue("LAN Relay URL", values.lanRelayUrl, "optional") {
-            edit(EditableField.LanRelayUrl, "LAN Relay URL")
+            target = EditableField.LanRelayUrl
         }
-        EditableValue("Relay token", values.relayToken, "required") { edit(EditableField.RelayToken, "Relay token") }
-        EditableValue("PC id", values.pcId, "required") { edit(EditableField.PcId, "PC id") }
+        EditableValue("Relay token", values.relayToken, "required") { target = EditableField.RelayToken }
+        EditableValue("PC id", values.pcId, "required") { target = EditableField.PcId }
         EditableValue("Pairing secret", values.pairingSecret, "required") {
-            edit(EditableField.PairingSecret, "Pairing secret")
+            target = EditableField.PairingSecret
         }
 
         Button(

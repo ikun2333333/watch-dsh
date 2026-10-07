@@ -2,7 +2,7 @@ package dev.watchdsh.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -18,6 +18,7 @@ import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.TimeText
 import dev.watchdsh.data.Diag
 import dev.watchdsh.net.LinkState
+import dev.watchdsh.ui.theme.WatchDshTheme
 
 /** The screens this app has. Navigation is a single enum: there are only four. */
 enum class Screen { Setup, Sessions, Chat, Settings }
@@ -25,11 +26,13 @@ enum class Screen { Setup, Sessions, Chat, Settings }
 /**
  * How long a screen takes to crossfade.
  *
- * Short on purpose. A watch is glanced at, and a slow transition turns every
- * navigation into a wait; this is long enough to read as movement and short
- * enough not to delay the screen the user asked for.
+ * Wear Material 3's own effects spec rather than a hand-picked duration. The spec
+ * carries the framework's decisions about pacing on a low-power device and follows
+ * the theme; a `tween` restates one number and throws the rest away.
  */
-private val SCREEN_FADE = tween<Float>(durationMillis = 220)
+@Composable
+private fun screenFade(): FiniteAnimationSpec<Float> =
+    MaterialTheme.motionScheme.defaultEffectsSpec()
 
 /**
  * Root of the app.
@@ -62,6 +65,17 @@ fun WatchDshApp() {
     var showSettings by remember { mutableStateOf(false) }
     var landed by remember { mutableStateOf(false) }
 
+    /**
+     * The text being written, or null when the composer is closed.
+     *
+     * A nullable string rather than another entry in [Screen]: the composer is not a
+     * place in the app, it is a piece of text being worked on, and it can be opened
+     * from more than one screen. Keeping it separate also means the screen underneath
+     * is unchanged when the composer closes, so the user returns to where they were
+     * rather than to a screen chosen by the navigation.
+     */
+    var composerDraft by remember { mutableStateOf<String?>(null) }
+
     LaunchedEffect(state.settings.isConfigured, state.settingsLoaded) {
         // Stay once the user has moved. A later settings change is not a reason to
         // yank them back to a screen they left.
@@ -87,12 +101,16 @@ fun WatchDshApp() {
         }
     }
 
-    MaterialTheme {
+    WatchDshTheme {
         // The system back gesture and button are how a watch user expects to leave
         // a screen, and without this they leave the app instead: back from a
         // conversation dropped the whole activity, so returning meant reopening and
         // waiting to reconnect. Back now steps outward one screen at a time.
-        BackHandler(enabled = showSettings || screen == Screen.Chat) {
+        //
+        // Disabled while the composer is open, because that page defines back as
+        // "submit what I wrote" - two handlers would fight, and the wrong one winning
+        // means the text is silently thrown away.
+        BackHandler(enabled = composerDraft == null && (showSettings || screen == Screen.Chat)) {
             if (showSettings) showSettings = false else screen = Screen.Sessions
         }
 
@@ -109,12 +127,36 @@ fun WatchDshApp() {
         // AppScaffold is the app-level container; it owns the system time text
         // that Wear requires at the top of a round display.
         AppScaffold(timeText = { TimeText() }) {
+            // The composer covers everything while it is open. It is not crossfaded,
+            // because the keyboard is about to take the whole display anyway and an
+            // animation underneath it is only a delay.
+            val draft = composerDraft
+            if (draft != null) {
+                InputScreen(
+                    title = "Ask",
+                    placeholder = "Type here, or dictate",
+                    confirmLabel = "Send",
+                    initial = draft,
+                    settings = state.settings,
+                    onVoiceMessage = viewModel::showNotice,
+                    onSubmit = { text ->
+                        composerDraft = null
+                        viewModel.send(text)
+                    },
+                    onCancel = { composerDraft = null },
+                )
+                return@AppScaffold
+            }
+
             // Screens crossfade. Without this a switch is a single-frame swap,
             // which on a round display reads as the app jumping rather than
             // moving: the eye gets no cue about which screen it is now looking at,
             // and a switch that happens while the previous screen was mid-scroll
             // is especially hard to follow.
-            Crossfade(targetState = visibleScreen(screen, showSettings), animationSpec = SCREEN_FADE) { shown ->
+            Crossfade(
+                targetState = visibleScreen(screen, showSettings),
+                animationSpec = screenFade(),
+            ) { shown ->
                 when (shown) {
                     Screen.Settings -> SettingsScreen(
                         state = state,
@@ -151,6 +193,7 @@ fun WatchDshApp() {
                         onCancel = viewModel::cancel,
                         onVoiceResult = viewModel::send,
                         onVoiceMessage = viewModel::showNotice,
+                        onType = { draft -> composerDraft = draft },
                         onAllow = viewModel::allow,
                         onReject = viewModel::reject,
                     )

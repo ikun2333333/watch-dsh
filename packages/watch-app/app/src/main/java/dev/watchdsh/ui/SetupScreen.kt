@@ -47,10 +47,11 @@ fun SetupScreen(
     val listState = rememberScalingLazyListState()
     var formOpen by rememberSaveable { mutableStateOf(false) }
 
-    ScreenScaffold(scrollState = listState) {
+    ScreenScaffold(scrollState = listState) { contentPadding ->
         ScalingLazyColumn(
             state = listState,
             modifier = Modifier.fillMaxWidth(),
+            contentPadding = contentPadding,
             verticalArrangement = ListArrangement,
         ) {
             item {

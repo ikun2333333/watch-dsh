@@ -37,10 +37,13 @@ fun SessionsScreen(
 ) {
     val listState = rememberScalingLazyListState()
 
-    ScreenScaffold(scrollState = listState) {
+    // The scaffold's padding keeps the status card clear of the time chip and the
+    // last row clear of the bottom curve; it was being discarded.
+    ScreenScaffold(scrollState = listState) { contentPadding ->
         ScalingLazyColumn(
             state = listState,
             modifier = Modifier.fillMaxWidth(),
+            contentPadding = contentPadding,
             verticalArrangement = ListArrangement,
         ) {
             item { StatusCard(state) }
@@ -139,6 +142,18 @@ private fun relativeTime(updatedAt: Long): String {
         minutes < 1 -> "just now"
         minutes < 60 -> "${minutes}m ago"
         minutes < 60 * 24 -> "${minutes / 60}h ago"
-        else -> SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(updatedAt))
+        else -> dayFormat.format(Date(updatedAt))
     }
 }
+
+/**
+ * The day-level formatter, built once.
+ *
+ * It used to be constructed inside [relativeTime], which is called per row - and the
+ * whole list recomposes on every stream flush while a turn is running, so this was a
+ * formatter allocated per row per frame. `SimpleDateFormat` is also not thread-safe,
+ * so sharing one instance is only safe because it is read from the UI thread alone;
+ * the single definition is the other reason, since a second one elsewhere could drift
+ * in style without anyone noticing.
+ */
+private val dayFormat = SimpleDateFormat("MMM d", Locale.getDefault())

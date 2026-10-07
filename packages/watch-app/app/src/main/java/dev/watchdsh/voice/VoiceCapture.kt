@@ -82,6 +82,11 @@ data class VoiceCaptureHandle(
  * @param onEditResult - a finished transcript to put in front of the user for
  *   correction instead of acting on. Speech is misheard often, and on a watch
  *   editing one word beats saying the whole thing again.
+ * @param onPartial - each interim transcript, for a screen that shows the words as
+ *   they arrive. Only the streaming recognizer produces these; the system one
+ *   answers once, at the end. Distinct from reading [VoiceCaptureHandle.partial]
+ *   because that re-reads the whole screen on every word, and a screen with a text
+ *   field in it should be told instead of recomposed.
  */
 @Composable
 fun rememberVoiceCapture(
@@ -89,11 +94,13 @@ fun rememberVoiceCapture(
     onResult: (String) -> Unit,
     onMessage: (String) -> Unit,
     onEditResult: (String) -> Unit = {},
+    onPartial: (String) -> Unit = {},
 ): VoiceCaptureHandle {
     val context = LocalContext.current
     val latestResult by rememberUpdatedState(onResult)
     val latestMessage by rememberUpdatedState(onMessage)
     val latestEdit by rememberUpdatedState(onEditResult)
+    val latestPartial by rememberUpdatedState(onPartial)
     val latestSettings by rememberUpdatedState(settings)
 
     val scope = rememberCoroutineScope()
@@ -143,7 +150,10 @@ fun rememberVoiceCapture(
         val recognition = async {
             try {
                 Result.success(
-                    recognizer.transcribe(config.asrCredentials, frames) { text -> liveText = text },
+                    recognizer.transcribe(config.asrCredentials, frames) { text ->
+                        liveText = text
+                        latestPartial(text)
+                    },
                 )
             } catch (e: CancellationException) {
                 // Cancellation has to propagate, or the recording never stops and

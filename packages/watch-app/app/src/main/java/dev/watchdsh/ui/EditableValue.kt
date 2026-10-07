@@ -24,6 +24,43 @@ enum class EditableField {
 }
 
 /**
+ * What the editor calls this value.
+ *
+ * Named in full rather than shortened, because the two services both have a key and
+ * a secret: "API key" alone does not say which one is being pasted.
+ */
+fun EditableField.title(): String = when (this) {
+    EditableField.RelayUrl -> "Public relay URL"
+    EditableField.LanRelayUrl -> "LAN relay URL"
+    EditableField.RelayToken -> "Relay token"
+    EditableField.PairingSecret -> "Pairing secret"
+    EditableField.PcId -> "PC id"
+    EditableField.AsrAppId -> "Xfyun app id"
+    EditableField.AsrApiKey -> "Xfyun API key"
+    EditableField.AsrApiSecret -> "Xfyun API secret"
+    EditableField.None -> ""
+}
+
+/**
+ * What to show while the box is empty.
+ *
+ * The credential fields say how long the value is, because these are copied from a
+ * provider console by eye and a length is the only check a user can make on a watch
+ * without reading every character.
+ */
+fun EditableField.placeholder(): String = when (this) {
+    EditableField.RelayUrl -> "ws://host:port, or wss:// for a remote relay"
+    EditableField.LanRelayUrl -> "optional; cleared if left empty"
+    EditableField.RelayToken -> "from .state/relay-token"
+    EditableField.PairingSecret -> "from .state/pairing-secret"
+    EditableField.PcId -> "shown by the bridge at startup"
+    EditableField.AsrAppId -> "8 hex characters"
+    EditableField.AsrApiKey -> "32 hex characters"
+    EditableField.AsrApiSecret -> "32 hex characters"
+    EditableField.None -> ""
+}
+
+/**
  * One editable value.
  *
  * The card shows the label, the current value, and a hint that tapping opens

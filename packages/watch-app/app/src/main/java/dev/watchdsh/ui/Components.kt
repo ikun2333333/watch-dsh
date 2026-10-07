@@ -15,6 +15,8 @@ import androidx.compose.ui.unit.dp
 import androidx.wear.compose.material3.Card
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.Text
+import androidx.wear.compose.material3.TextToggleButtonDefaults
+import androidx.wear.compose.material3.TextToggleButtonShapes
 import dev.watchdsh.net.LinkState
 
 /**
@@ -101,3 +103,17 @@ fun StatusCard(state: UiState, modifier: Modifier = Modifier) {
 
 /** Arrangement shared by every list screen. */
 val ListArrangement = Arrangement.spacedBy(6.dp)
+
+/**
+ * Corner shapes that show which of a pair is selected, not only its colour.
+ *
+ * The default `TextToggleButtonDefaults.shapes()` gives every state the same pill, so
+ * the only thing separating the chosen button from the other is a colour - which on a
+ * watch, glanced at in bright light or by someone who is colour-blind, is not much of
+ * a signal. Wear M3 keeps `variantAnimatedShapes()` for exactly this: unselected stays
+ * a pill, selected extends into a rounded rectangle, and the change animates rather
+ * than switching.
+ */
+@Composable
+fun selectionToggleShapes(): TextToggleButtonShapes =
+    TextToggleButtonDefaults.variantAnimatedShapes()
