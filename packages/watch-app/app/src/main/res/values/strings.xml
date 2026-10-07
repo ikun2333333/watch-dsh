@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Watch DSH</string>
+
+    <!-- The ongoing notification a foreground service must show. Worded as a state
+         rather than an announcement: it exists to explain why the app is running. -->
+    <string name="link_channel_name">Connection to PC</string>
+    <string name="link_channel_description">Shown while the watch is keeping a connection open</string>
+    <string name="link_notification_title">Connected to PC</string>
+    <string name="link_notification_text">Keeping the link open in the background</string>
 </resources>

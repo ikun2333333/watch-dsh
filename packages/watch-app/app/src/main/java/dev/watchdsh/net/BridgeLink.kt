@@ -165,6 +165,14 @@ class BridgeLink(
     private var fallbacks: List<String> = emptyList()
 
     /**
+     * How many times the current address has been retried since it last worked.
+     *
+     * Reset whenever a handshake succeeds and whenever [advance] moves on, so it
+     * counts attempts against *this* address rather than failures overall.
+     */
+    private var attemptsHere = 0
+
+    /**
      * The id the relay assigned this connection, learned from its `ready` frame.
      *
      * Used for diagnostics only: the relay stamps this id on frames it forwards, so
@@ -251,8 +259,10 @@ class BridgeLink(
         val current = config ?: return false
         config = current.copy(url = next)
         // A different address is a fresh start: the backoff earned by the address
-        // that failed should not delay the one that may work.
+        // that failed should not delay the one that may work, and neither should its
+        // retry count.
         attempt = 0
+        attemptsHere = 0
         sealKeys.clear()
         observer?.invoke("falling back to the next address")
         openSocket()
@@ -302,6 +312,9 @@ class BridgeLink(
                     runCatching { handshake() }
                         .onSuccess {
                             pcOnline = true
+                            // This address works, so its retry budget is restored and
+                            // the next drop gets the same benefit of the doubt.
+                            attemptsHere = 0
                             _state.value = LinkState.Connected
                             observer?.invoke("handshake ok: connected")
                         }
@@ -334,6 +347,25 @@ class BridgeLink(
                     else -> LinkState.Disconnected
                 }
                 failAllPending(t.message ?: "connection failed")
+                // Transient drops get the same address again before another is tried.
+                //
+                // "Software caused connection abort" is what an established socket
+                // looks like when it is cut - a radio nap, a brief drop - and the
+                // address that just carried a handshake is the *best* candidate there
+                // is. Falling back on the first of those threw it away for good, and
+                // with the public relay unreachable from here the watch then sat on
+                // "PC not running" while a working address sat one entry back in a
+                // list it would never revisit.
+                //
+                // Retried a bounded number of times rather than indefinitely, so a
+                // genuinely dead address still moves on rather than stalling.
+                val transient = response == null && !closing && attemptsHere < SAME_ADDRESS_ATTEMPTS
+                if (transient) {
+                    attemptsHere += 1
+                    observer?.invoke("retrying the same address (${attemptsHere}/$SAME_ADDRESS_ATTEMPTS)")
+                    scheduleReconnect()
+                    return
+                }
                 // An address that could not be reached says nothing about the next
                 // one, so another is tried immediately rather than after a backoff.
                 // A response, by contrast, means the address works and the failure
@@ -625,6 +657,14 @@ class BridgeLink(
     private companion object {
         /** Long enough for a slow tool-free turn, short enough to surface a dead link. */
         const val COMMAND_TIMEOUT_MS = 30_000L
+
+        /**
+         * How many times a dropped address is retried before the next one is tried.
+         *
+         * Two, so a single radio nap does not cost the address, and a genuinely dead
+         * one still moves on within a few seconds rather than stalling on it.
+         */
+        const val SAME_ADDRESS_ATTEMPTS = 2
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             // The relay pings on its own schedule; a slightly longer read timeout

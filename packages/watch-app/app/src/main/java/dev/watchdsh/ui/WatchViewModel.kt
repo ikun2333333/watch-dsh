@@ -12,6 +12,7 @@ import dev.watchdsh.net.BridgeEvent
 import dev.watchdsh.net.BridgeException
 import dev.watchdsh.net.BridgeLink
 import dev.watchdsh.net.ConnectionConfig
+import dev.watchdsh.net.LinkService
 import dev.watchdsh.net.LinkState
 import dev.watchdsh.net.WifiKeeper
 import dev.watchdsh.protocol.BridgeStatus
@@ -186,6 +187,19 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
             link.state.collect { linkState ->
                 Diag.log(getApplication(), "link=$linkState")
                 _state.update { it.copy(link = linkState) }
+                // The foreground service follows the intent to be connected, not the
+                // socket. Started on the first attempt and kept through the retries
+                // and fallbacks, because the freeze it prevents is also what stops a
+                // reconnect from running: releasing it during every blip would leave
+                // the app unable to recover from one while the screen is off, which
+                // is the whole problem it is here to solve.
+                if (linkState == LinkState.Unauthorized || linkState == LinkState.Failed) {
+                    // Configuration errors that retrying cannot fix, so there is
+                    // nothing left to stay awake for.
+                    LinkService.stop(getApplication())
+                } else {
+                    LinkService.start(getApplication())
+                }
             }
         }
         viewModelScope.launch {
@@ -439,6 +453,10 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
         streamFlush?.cancel()
         streamFlush = null
         streamBuffer.setLength(0)
+        // The service outlives the ViewModel by design - that is what keeps the
+        // connection through the screen going off - so it is stopped explicitly
+        // rather than being left to a scope that is already finished.
+        LinkService.stop(getApplication())
         super.onCleared()
     }
 

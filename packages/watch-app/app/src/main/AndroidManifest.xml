@@ -28,7 +28,16 @@
          microphone. It is requested at the moment it is used, not at launch. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- No POST_NOTIFICATIONS: the app posts no notifications yet. -->
+    <!-- The link is kept alive by a foreground service, because that is the only
+         thing Android guarantees will not be frozen while the screen is off. A
+         frozen process cannot answer the WebSocket ping, so the socket was cut
+         about twenty seconds after the screen went dark, and the reconnect it
+         scheduled never ran either. FOREGROUND_SERVICE_DATA_SYNC is required from
+         API 34 for the type used; POST_NOTIFICATIONS is required from API 33 to
+         show the ongoing notification that a foreground service must have. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- The app is useful exactly when a PC is reachable, so it is not required
          to run on a watch without a network of its own. -->
@@ -67,6 +76,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Started while the app means to be connected, stopped when it does not.
+             `stopWithTask` so closing the app takes the notification with it rather
+             than leaving an orphan the user cannot dismiss. -->
+        <service
+            android:name=".net.LinkService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="true" />
     </application>
 
 </manifest>
