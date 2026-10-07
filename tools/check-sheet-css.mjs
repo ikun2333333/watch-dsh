@@ -79,8 +79,21 @@ const darkToken = /--wd-bg:#(?:[0-9a-f]{3}|[0-9a-f]{6})\b/iu.test(text)
 console.log(`  ${darkToken ? 'ok  ' : 'FAIL'} the dark token is an opaque hex colour`)
 if (!darkToken) bad += 1
 
-const lightOverride = text.includes('body:not([data-ds-dark-theme])')
-console.log(`  ${lightOverride ? 'ok  ' : 'FAIL'} light mode follows the shell's own attribute`)
-if (!lightOverride) bad += 1
+const darkFollowsShell = text.includes('body[data-ds-dark-theme] .dshwd_sheet{--wd-bg:#16181d')
+console.log(`  ${darkFollowsShell ? 'ok  ' : 'FAIL'} dark follows the shell's own attribute`)
+if (!darkFollowsShell) bad += 1
+
+const lightBase = /\.dshwd_sheet\{--wd-bg:#fff/iu.test(text)
+console.log(`  ${lightBase ? 'ok  ' : 'FAIL'} light is the base, as the shell treats it`)
+if (!lightBase) bad += 1
+
+// A media query here would be wrong rather than merely redundant: the shell
+// resolves the preference itself, so a reader whose choice differs from their
+// operating system would be shown the wrong palette. Checked against the emitted
+// CSS, not the file - the source explains at length why it is absent, and a
+// whole-file search would match its own explanation.
+const noMediaQuery = !source.includes('prefers-color-scheme')
+console.log(`  ${noMediaQuery ? 'ok  ' : 'FAIL'} no prefers-color-scheme, which would disagree with the shell`)
+if (!noMediaQuery) bad += 1
 
 process.exitCode = bad === 0 ? 0 : 1

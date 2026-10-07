@@ -78,25 +78,36 @@ window.__ModuleLoader__.load({
 		 * undefined custom property makes its declaration invalid, so the sheet had no
 		 * background at all and the conversation showed through it.
 		 *
-		 * The shell projects its resolved theme onto the document - `html{color-scheme}`
-		 * for native controls, and `body[data-ds-dark-theme]` for the palette - so the
-		 * values are defined against that attribute rather than guessed. Every colour
-		 * is opaque on purpose: a translucent surface over a transcript is unreadable,
-		 * which is the report that prompted this.
+		 * ## How it follows the user's theme
 		 *
-		 * Split in two so the token block can be switched by appending one override,
-		 * rather than repeating a media query on every rule.
+		 * The shell resolves the preference - `dark` or `system`, and the system query
+		 * for the latter - and writes the answer onto the document:
+		 *
+		 *   const dark = preference === 'dark' || systemDark
+		 *   document.body.toggleAttribute('data-ds-dark-theme', dark)
+		 *
+		 * That attribute is the signal used here, because it is what the shell's own
+		 * 29 `body[data-ds-dark-theme]` rules use, and because it is already resolved:
+		 * reading `prefers-color-scheme` directly would disagree with the shell when
+		 * the user has chosen a theme that differs from their operating system.
+		 *
+		 * The light values are the base and dark overrides them, which is the shell's
+		 * own convention - it marks dark rather than marking light.
+		 *
+		 * No `prefers-color-scheme` fallback, deliberately. It was tempting as a guard
+		 * for the moment before the attribute is written, but it cannot be made
+		 * correct: the shell sets the attribute from the *resolved* preference, so a
+		 * user whose choice differs from their operating system would be shown the
+		 * wrong palette by a media query, and there is no complementary attribute to
+		 * test for "light". The shell writes it from its boot script, before anything
+		 * renders, so the gap it would have covered does not exist.
 		 */
 		const SHEET_TOKENS = [
-			// Dark is the default: the shell boots dark, and the light override below
-			// is what follows from the shell's own attribute.
-			".dshwd_sheet{--wd-bg:#16181d;--wd-bg2:#22262e;--wd-line:#333844;--wd-fg:#e7e9ee;",
-			"--wd-fg2:#a6acb8;--wd-accent:#4f7cff;--wd-accent-fg:#fff;--wd-good:#3fb950;--wd-bad:#f85149}",
-			// The one signal that matches what the user sees, because the shell sets it
-			// from the theme it resolved.
-			"body:not([data-ds-dark-theme]) .dshwd_sheet{--wd-bg:#fff;--wd-bg2:#f2f4f7;",
-			"--wd-line:#dfe3e9;--wd-fg:#17181c;--wd-fg2:#5b6270;--wd-accent:#3559d9;",
-			"--wd-accent-fg:#fff;--wd-good:#1a7f37;--wd-bad:#cf222e}",
+			".dshwd_sheet{--wd-bg:#fff;--wd-bg2:#f2f4f7;--wd-line:#dfe3e9;--wd-fg:#17181c;",
+			"--wd-fg2:#5b6270;--wd-accent:#3559d9;--wd-accent-fg:#fff;--wd-good:#1a7f37;--wd-bad:#cf222e}",
+			"body[data-ds-dark-theme] .dshwd_sheet{--wd-bg:#16181d;--wd-bg2:#22262e;",
+			"--wd-line:#333844;--wd-fg:#e7e9ee;--wd-fg2:#a6acb8;--wd-accent:#4f7cff;",
+			"--wd-accent-fg:#fff;--wd-good:#3fb950;--wd-bad:#f85149}",
 		].join("")
 
 		const CSS = [
