@@ -311,7 +311,7 @@ export class Bridge {
       .filter((track) => track.summary !== undefined)
       .map((track) => ({
         id: track.sessionId,
-        title: track.title ?? titleFromCwd(track.summary.cwd),
+        title: resolveTitle(track),
         running: track.running,
         blank: track.summary.blank === true,
         updatedAt: track.summary.updatedAt,
@@ -331,7 +331,7 @@ export class Bridge {
     await this.broadcast(event(EVENTS.SESSION, {
       session: {
         id: track.sessionId,
-        title: track.title ?? titleFromCwd(track.summary?.cwd),
+        title: resolveTitle(track),
         running: track.running,
         updatedAt: track.summary?.updatedAt ?? Date.now(),
       },
@@ -559,7 +559,7 @@ export class Bridge {
     const track = this.#sessions.get(sessionId) ?? new SessionTrack(sessionId);
     this.#sessions.set(sessionId, track);
     watch.sessionId = sessionId;
-    await watch.ok(id, { sessionId, title: track.title ?? titleFromCwd(track.summary?.cwd) });
+    await watch.ok(id, { sessionId, title: resolveTitle(track) });
     await this.#follow(track);
     await this.#sendTranscript(watch, undefined, { sessionId });
   }
@@ -783,11 +783,48 @@ export class Bridge {
   }
 }
 
+/**
+ * A session's title, from the list summary the Harness already provides.
+ *
+ * The title is not a field of the summary. It arrives inside the sequenced
+ * projection:
+ *
+ *   { sessionId, cwd, projections: { kind: 'sequenced', values: { title: '...' } } }
+ *
+ * Reading the summary alone therefore found nothing, and every session fell back
+ * to `titleFromCwd` - so the watch listed its sessions by working directory, which
+ * is what a user sees as "the title is wrong". Both projection kinds (`sequenced`
+ * for a live session, `cached` for one read back from disk) carry `values.title`
+ * in the same place, and only genuinely blank sessions have none.
+ *
+ * Exported for its own test: this is the shape of somebody else's response, and
+ * reading it wrongly is silent - the fallback is plausible, so nothing looks broken.
+ *
+ * @returns the title, or undefined to let the caller fall back.
+ */
+export function titleFromSummary(summary) {
+  const title = summary?.projections?.values?.title;
+  return typeof title === 'string' && title.trim() !== '' ? title.trim() : undefined;
+}
+
 /** Derive a readable title when the Harness has not produced one yet. */
 function titleFromCwd(cwd) {
   if (typeof cwd !== 'string' || cwd === '') return 'New session';
   const parts = cwd.split(/[\\/]/u).filter(Boolean);
   return parts[parts.length - 1] ?? 'Session';
+}
+
+/**
+ * The title to show for one session.
+ *
+ * The live `session/title` event wins when it has arrived, because it is the
+ * freshest statement; the summary's projection is what covers every other session,
+ * and the working directory is the last resort for one with no title at all.
+ *
+ * Exported for its own test, for the same reason as [titleFromSummary].
+ */
+export function resolveTitle(track) {
+  return track.title ?? titleFromSummary(track.summary) ?? titleFromCwd(track.summary?.cwd);
 }
 
 /** Extract plain text from a message-shaped payload. */
