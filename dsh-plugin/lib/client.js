@@ -83,29 +83,66 @@ window.__ModuleLoader__.load({
 			"background:var(--dsw-alias-fill-l2)}",
 			".dshwd_mode:disabled{cursor:default}",
 			".dshwd_modeOn{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-fill-l2)}",
-			// The pairing panel. Bordered and inset rather than floating: it sits in
-			// the composer dock, where a positioned overlay would be clipped by
-			// whichever ancestor owns the scrolling.
-			".dshwd_panel{margin-top:6px;border:1px solid var(--dsw-alias-separator-primary);",
-			"border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:7px}",
-			".dshwd_h{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary)}",
-			".dshwd_note{font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary)}",
-			".dshwd_devices{display:flex;flex-wrap:wrap;gap:5px}",
-			".dshwd_dev{font:inherit;font-size:11px;font-family:var(--dsw-font-mono);cursor:pointer;",
-			"border:1px solid var(--dsw-alias-separator-primary);border-radius:6px;padding:3px 8px;",
+			// The status text is the way in to pairing. It looks like a label until
+			// hovered, because the bar's job is to report, and a row of buttons in the
+			// composer is noise.
+			".dshwd_open{background:0 0;border:0;padding:0;font:inherit;text-align:left;cursor:pointer;",
+			"color:inherit;min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+			".dshwd_open:hover{color:var(--dsw-alias-label-secondary)}",
+			// Detached from the composer, following dsh-api-dashboard's drawer.
+			//
+			// Fixed rather than inline, and this is the whole point: the bar lives in
+			// the composer dock, where any ancestor with a transform or an overflow
+			// clips a panel that tries to grow out of it. The dashboard hit this too
+			// and moved its surface out of the flow, so this does the same - a sheet
+			// pinned to the bottom, above everything.
+			".dshwd_scrim{position:fixed;inset:0;z-index:99998;background:rgba(0,0,0,.35);",
+			"animation:dshwd-fade .15s ease-out;",
+			// A guard, not decoration: the mobile shell opens its sidebar on a stroke
+			// starting in the left half of the screen, and it listens in the capture
+			// phase, so no plugin can intercept it. It does step aside for a genuinely
+			// horizontally scrollable ancestor, so a 2px invisible overflow here makes
+			// the whole sheet fall under that rule. The scrim is fixed, so scrolling it
+			// moves nothing.
+			"overflow-x:auto;overflow-y:hidden;scrollbar-width:none}",
+			".dshwd_scrim::-webkit-scrollbar{display:none}",
+			".dshwd_sheet{position:fixed;left:0;right:0;bottom:0;z-index:99999;",
+			"max-height:min(80vh,calc(100vh - 24px));background:var(--dsw-alias-bg-primary);",
+			"border-radius:18px 18px 0 0;box-shadow:0 -8px 32px rgba(0,0,0,.18);",
+			"display:flex;flex-direction:column;overflow:hidden;",
+			"animation:dshwd-rise .22s cubic-bezier(.16,1,.3,1)}",
+			"@media (min-width:561px){.dshwd_sheet{width:min(560px,calc(100vw - 48px));margin:0 auto;bottom:12px;",
+			"border-radius:18px;box-shadow:0 24px 64px rgba(0,0,0,.22)}}",
+			"@keyframes dshwd-rise{from{transform:translateY(100%)}to{transform:translateY(0)}}",
+			"@keyframes dshwd-fade{from{opacity:0}to{opacity:1}}",
+			".dshwd_grip{flex:none;padding:7px 0 3px;display:flex;justify-content:center;cursor:grab}",
+			".dshwd_grip span{width:34px;height:4px;border-radius:2px;background:var(--dsw-alias-separator-primary)}",
+			".dshwd_head{flex:none;display:flex;align-items:center;gap:8px;padding:2px 14px 8px;",
+			"font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}",
+			".dshwd_head .dshwd_x{margin-left:auto;font:inherit;font-size:12px;font-weight:400;cursor:pointer;",
+			"border:0;background:0 0;color:var(--dsw-alias-label-tertiary);padding:2px 6px;border-radius:5px}",
+			".dshwd_head .dshwd_x:hover{background:var(--dsw-alias-fill-l2)}",
+			".dshwd_body{overflow-y:auto;padding:0 14px 14px;display:flex;flex-direction:column;gap:9px}",
+			".dshwd_h{font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;",
+			"color:var(--dsw-alias-label-tertiary)}",
+			".dshwd_note{font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary)}",
+			".dshwd_devices{display:flex;flex-wrap:wrap;gap:6px}",
+			".dshwd_dev{font:inherit;font-size:12px;font-family:var(--dsw-font-mono);cursor:pointer;",
+			"border:1px solid var(--dsw-alias-separator-primary);border-radius:7px;padding:5px 10px;",
 			"background:0 0;color:var(--dsw-alias-label-secondary);max-width:100%;overflow:hidden;",
 			"text-overflow:ellipsis;white-space:nowrap}",
 			".dshwd_dev:hover:not(:disabled){background:var(--dsw-alias-fill-l2)}",
 			".dshwd_devOn{border-color:var(--dsw-alias-label-primary);color:var(--dsw-alias-label-primary)}",
-			".dshwd_inrow{display:flex;gap:5px;align-items:center}",
-			".dshwd_input{flex:1;min-width:0;font:inherit;font-size:11px;font-family:var(--dsw-font-mono);",
-			"padding:3px 7px;border-radius:6px;border:1px solid var(--dsw-alias-separator-primary);",
+			".dshwd_inrow{display:flex;gap:6px;align-items:center;flex-wrap:wrap}",
+			".dshwd_input{flex:1;min-width:130px;font:inherit;font-size:12px;font-family:var(--dsw-font-mono);",
+			"padding:5px 9px;border-radius:7px;border:1px solid var(--dsw-alias-separator-primary);",
 			"background:var(--dsw-alias-fill-l1);color:var(--dsw-alias-label-primary)}",
-			".dshwd_go{font:inherit;font-size:11px;font-weight:600;cursor:pointer;border:0;",
-			"border-radius:6px;padding:4px 12px;background:var(--dsw-alias-button-primary-fill);",
+			".dshwd_go{font:inherit;font-size:12px;font-weight:600;cursor:pointer;border:0;",
+			"border-radius:7px;padding:6px 14px;background:var(--dsw-alias-button-primary-fill);",
 			"color:var(--dsw-alias-button-primary-label)}",
 			".dshwd_go:disabled{opacity:.5;cursor:default}",
-			".dshwd_result{font-size:11px;line-height:15px;white-space:pre-wrap;word-break:break-word}",
+			".dshwd_result{font-size:12px;line-height:17px;white-space:pre-wrap;word-break:break-word;",
+			"border-radius:7px;padding:7px 9px;background:var(--dsw-alias-fill-l1)}",
 			".dshwd_good{color:var(--dsw-alias-state-success-primary)}",
 			".dshwd_bad{color:var(--dsw-alias-state-error-primary)}",
 		].join("")
@@ -224,6 +261,10 @@ window.__ModuleLoader__.load({
 					text,
 				)
 
+			// The bar reports and nothing else. Pairing is reached by pressing the
+			// status itself, which is where a reader's eye already is, and it opens a
+			// sheet of its own rather than growing inside the composer - the
+			// dashboard keeps its surfaces out of the bar for the same reason.
 			return react.createElement(
 				"div",
 				null,
@@ -232,39 +273,38 @@ window.__ModuleLoader__.load({
 					{ className: "dshwd_row" },
 					react.createElement("span", { className: "dshwd_dot " + tone }),
 					react.createElement(
-						"span",
-						{ className: "dshwd_label", title: status.detail },
+						"button",
+						{
+							className: "dshwd_open",
+							onClick: () => setOpen(true),
+							title: "Pair a watch over adb",
+						},
 						busy ? "switching relay..." : status.detail ?? "watch",
 					),
 					react.createElement(
 						"span",
 						{ className: "dshwd_modes" },
-						react.createElement(
-							"button",
-							{
-								className: "dshwd_mode" + (open ? " dshwd_modeOn" : ""),
-								onClick: () => setOpen(!open),
-								title: "Pair a watch over adb",
-							},
-							"Pair",
-						),
 						button("lan", "LAN", "Use the relay on this network"),
 						button("public", "Public", "Use the public relay"),
 					),
 				),
-				open ? react.createElement(PairPanel, { onClose: () => setOpen(false) }) : null,
+				open ? react.createElement(PairSheet, { onClose: () => setOpen(false) }) : null,
 			)
 		}
 
 		/**
 		 * Pair a watch, over adb, from here.
 		 *
+		 * A sheet pinned to the bottom of the viewport, following dsh-api-dashboard's
+		 * drawer: fixed positioning, a scrim behind it, and z-index above the shell's
+		 * own overlays. Inline would have been simpler and does not work - the
+		 * composer dock clips anything that tries to grow out of it.
+		 *
 		 * Three steps in the order they have to happen: attach the watch (it may
 		 * already be attached), choose what the config should point at, pair. The
-		 * device list is the host's, because adb runs there - a browser cannot reach
-		 * a watch and has no business trying.
+		 * device list comes from the host, because adb runs there.
 		 */
-		function PairPanel(props) {
+		function PairSheet(props) {
 			const [devices, setDevices] = react.useState([])
 			const [serial, setSerial] = react.useState("")
 			const [address, setAddress] = react.useState("")
@@ -290,6 +330,16 @@ window.__ModuleLoader__.load({
 			react.useEffect(() => {
 				void refresh()
 			}, [refresh])
+
+			// Escape closes it, like any other sheet. Listening on the document rather
+			// than the sheet means it works before anything inside has been focused.
+			react.useEffect(() => {
+				const onKey = (event) => {
+					if (event.key === "Escape") props.onClose()
+				}
+				document.addEventListener("keydown", onKey)
+				return () => document.removeEventListener("keydown", onKey)
+			}, [props])
 
 			const attach = async () => {
 				if (address.trim() === "") return
@@ -338,18 +388,41 @@ window.__ModuleLoader__.load({
 
 			return react.createElement(
 				"div",
-				{ className: "dshwd_panel" },
-				react.createElement("div", { className: "dshwd_h" }, "Pair a watch"),
-
+				null,
+				// The scrim carries a 2px invisible horizontal overflow; see the CSS
+				// comment. It is also the click target for dismissing.
+				react.createElement("div", { className: "dshwd_scrim", onClick: () => props.onClose() }),
 				react.createElement(
 					"div",
-					{ className: "dshwd_note" },
-					ready.length > 0
-						? "Choose the watch to pair."
-						: "No watch is attached. On the watch: Settings > About watch > Software, tap " +
-							'"Software version" five times, then Developer options > Wireless debugging, ' +
-							"and enter the address it shows.",
-				),
+					{ className: "dshwd_sheet", role: "dialog", "aria-label": "Pair a watch" },
+					react.createElement(
+						"div",
+						{ className: "dshwd_grip", onClick: () => props.onClose() },
+						react.createElement("span", null),
+					),
+					react.createElement(
+						"div",
+						{ className: "dshwd_head" },
+						"Pair a watch",
+						react.createElement(
+							"button",
+							{ className: "dshwd_x", onClick: () => props.onClose(), title: "Close" },
+							"Close",
+						),
+					),
+					react.createElement(
+						"div",
+						{ className: "dshwd_body" },
+						react.createElement("div", { className: "dshwd_h" }, "Watch"),
+						react.createElement(
+							"div",
+							{ className: "dshwd_note" },
+							ready.length > 0
+								? "Choose the watch to pair. Its connection settings are replaced."
+								: "No watch is attached. On the watch: Settings > About watch > Software, " +
+									'tap "Software version" five times, then Developer options > Wireless ' +
+									"debugging, and enter the address it shows.",
+						),
 
 				ready.length > 0
 					? react.createElement(
@@ -451,13 +524,15 @@ window.__ModuleLoader__.load({
 						: null,
 				),
 
-				result !== null
-					? react.createElement(
-							"div",
-							{ className: "dshwd_result " + (result.ok ? "dshwd_good" : "dshwd_bad") },
-							result.text,
-						)
-					: null,
+						result !== null
+							? react.createElement(
+									"div",
+									{ className: "dshwd_result " + (result.ok ? "dshwd_good" : "dshwd_bad") },
+									result.text,
+								)
+							: null,
+					),
+				),
 			)
 		}
 
