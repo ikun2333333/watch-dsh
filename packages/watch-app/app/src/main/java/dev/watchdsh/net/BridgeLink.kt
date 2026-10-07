@@ -173,6 +173,18 @@ class BridgeLink(
     private var attemptsHere = 0
 
     /**
+     * Bumped for every socket this link opens.
+     *
+     * A listener captures the generation it belongs to and ignores its own failure
+     * once that is no longer current, which is how a deliberately replaced socket
+     * stops scheduling reconnects for a link that has already moved on.
+     */
+    private var generation = 0
+
+    /** The pending handshake retry while waiting for a PC to come back. */
+    private var retryJob: Job? = null
+
+    /**
      * The id the relay assigned this connection, learned from its `ready` frame.
      *
      * Used for diagnostics only: the relay stamps this id on frames it forwards, so
@@ -244,6 +256,9 @@ class BridgeLink(
         this.fallbacks = fallbacks
         this.closing = false
         this.attempt = 0
+        // The retry budget belongs to the address being tried, and this is a fresh
+        // start with a (possibly different) first address.
+        this.attemptsHere = 0
         sealKeys.clear()
         openSocket()
     }
@@ -274,6 +289,10 @@ class BridgeLink(
         closing = true
         reconnectJob?.cancel()
         reconnectJob = null
+        // The handshake retry belongs to the socket being closed; leaving it running
+        // would have it ask a link that no longer exists.
+        retryJob?.cancel()
+        retryJob = null
         val socket = webSocket
         webSocket = null
         socket?.close(1000, "client closing")
@@ -293,6 +312,7 @@ class BridgeLink(
         // `adb pull` can retrieve it.
         observer?.invoke("opening ${config.redactedWatchUrl()}")
         val request = Request.Builder().url(config.watchUrl()).build()
+        val myGeneration = ++generation
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 attempt = 0
@@ -336,6 +356,18 @@ class BridgeLink(
                 val code = response?.code
                 wifiKeeper?.release()
                 observer?.invoke("socket failed: ${t.javaClass.simpleName}: ${t.message} http=${code ?: "-"}")
+                // A socket from an earlier generation was replaced on purpose - by a
+                // reconnect or a manual connect - and its failure says nothing about
+                // the one that replaced it. Without this, `connect()` closed the
+                // previous socket, its close arrived after `closing` had already been
+                // reset, and the link scheduled a second connection a couple of
+                // seconds behind the first: a wasted round trip and a visible flicker
+                // on every manual reconnect.
+                //
+                // A counter rather than a comparison against `webSocket`, so this does
+                // not depend on whether the listener can fire before the field is
+                // assigned.
+                if (myGeneration != generation) return
                 // The socket is gone, so whatever it last said about the PC is no
                 // longer being kept up to date.
                 pcOnline = null
@@ -386,6 +418,9 @@ class BridgeLink(
                 // here rather than inferred later.
                 pcOnline = null
                 _state.value = LinkState.Disconnected
+                // Same guard as onFailure: a socket this link has already replaced
+                // must not schedule anything on its behalf.
+                if (myGeneration != generation) return
                 scheduleReconnect()
             }
         }
@@ -403,6 +438,40 @@ class BridgeLink(
             val delayMs = minOf(1_000L * (1L shl minOf(attempt, 5)), 30_000L)
             delay(delayMs)
             if (!closing) openSocket()
+        }
+    }
+
+    /**
+     * Keep trying the handshake on the socket that is already open.
+     *
+     * Used while the relay says the PC is absent. Reconnecting would be the wrong
+     * tool: the socket to the relay is fine, and the PC's return is what is being
+     * waited for - so the cheap thing to repeat is the round trip that asks.
+     *
+     * A missed push is the reason this exists at all. `pc-online` is sent when the
+     * PC arrives, but if that happens while this watch's socket is being
+     * re-established there is nobody to receive it, and without a retry the watch
+     * sits on "PC not running" with a working link one handshake away.
+     *
+     * One attempt at a time, and it stops as soon as the handshake answers or the
+     * socket is replaced - a failing attempt takes the command timeout, so the
+     * pacing looks after itself.
+     */
+    private fun scheduleHandshakeRetry() {
+        if (closing) return
+        if (retryJob?.isActive == true) return
+        retryJob = scope.launch {
+            while (!closing && webSocket != null && pcOnline != true) {
+                delay(HANDSHAKE_RETRY_MS)
+                if (closing || webSocket == null) return@launch
+                val result = runCatching { handshake() }
+                if (result.isSuccess) {
+                    observer?.invoke("retry handshake ok: connected")
+                    pcOnline = true
+                    _state.value = LinkState.Connected
+                    return@launch
+                }
+            }
         }
     }
 
@@ -533,20 +602,34 @@ class BridgeLink(
                 // The PC's bridge has gone. Pushed to every watch the moment the
                 // relay notices, so there is nothing to wait for and nothing to
                 // poll. Deliberately not a reconnect: the socket to the relay is
-                // still perfectly good, and the PC coming back will announce
-                // itself. Reconnecting here is what made a watch burn battery
-                // cycling a socket every thirty seconds while the computer was off.
+                // still perfectly good, and the PC coming back is announced by the
+                // `pc-online` frame below. Reconnecting here is what made a watch
+                // burn battery cycling a socket every thirty seconds while the
+                // computer was off.
                 "peer-offline" -> {
                     observer?.invoke("relay reports pc offline (pushed)")
                     pcOnline = false
                     _state.value = LinkState.RelayOnly
+                    // A safety net, because a push can be missed: if the relay
+                    // handled the PC's arrival in the moment this watch's socket was
+                    // being re-established, the frame goes nowhere. Without a retry
+                    // the watch then stayed on "PC not running" indefinitely - which
+                    // is exactly what it did, with a working link one handshake away.
+                    scheduleHandshakeRetry()
                 }
-                // The PC is attached again, sent when it arrives and finds this
-                // watch waiting. The socket was already open, so the link is
+                // The PC is attached again, sent to every waiting watch when it
+                // arrives. The socket was already open, so the link is
                 // re-established by running the handshake that proves it.
-                "watch-online" -> {
+                //
+                // Named `pc-online`, not `watch-online`: that frame travels the other
+                // way, to the PC, and means the opposite thing. One name for two
+                // directions is what made the first version of this handler dead code
+                // - it waited for a frame the relay never sends to a watch.
+                "pc-online" -> {
                     observer?.invoke("relay reports pc online (pushed)")
                     pcOnline = true
+                    retryJob?.cancel()
+                    retryJob = null
                     scope.launch {
                         runCatching { handshake() }
                             .onSuccess {
@@ -556,6 +639,7 @@ class BridgeLink(
                             .onFailure { error ->
                                 observer?.invoke("re-handshake failed: ${error.message}")
                                 _state.value = LinkState.RelayOnly
+                                scheduleHandshakeRetry()
                             }
                     }
                 }
@@ -665,6 +749,15 @@ class BridgeLink(
          * one still moves on within a few seconds rather than stalling on it.
          */
         const val SAME_ADDRESS_ATTEMPTS = 2
+
+        /**
+         * How long to wait between handshake attempts while the PC is away.
+         *
+         * A minute: this is a background recovery for a computer that is switched
+         * off, so there is nothing to gain from asking more often. A failing attempt
+         * costs the command timeout on top, which paces it further.
+         */
+        const val HANDSHAKE_RETRY_MS = 60_000L
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             // The relay pings on its own schedule; a slightly longer read timeout

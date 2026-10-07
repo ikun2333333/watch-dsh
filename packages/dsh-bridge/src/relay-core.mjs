@@ -94,6 +94,16 @@ export class RelayCore {
     const notices = [];
     if (role === PC_ROLE) {
       for (const id of entry.watches.keys()) notices.push({ peer, text: JSON.stringify({ t: 'watch-online', from: id }) });
+      // And the waiting watches learn the PC is back, which is the other half of
+      // `peer-offline`. Without it a watch that was told the PC had gone had no way
+      // to find out it had returned: it sat on "PC not running" while a working link
+      // was one handshake away, because nothing ever prompted the retry. The frame
+      // name is distinct from `watch-online` on purpose - that one travels to the
+      // PC and means the opposite thing, and one name for two directions is how the
+      // first attempt at this went wrong.
+      for (const watchPeer of entry.watches.values()) {
+        notices.push({ peer: watchPeer, text: JSON.stringify({ t: 'pc-online' }) });
+      }
     } else if (entry.pc !== undefined) {
       notices.push({ peer: entry.pc, text: JSON.stringify({ t: 'watch-online', from: watchId }) });
     }

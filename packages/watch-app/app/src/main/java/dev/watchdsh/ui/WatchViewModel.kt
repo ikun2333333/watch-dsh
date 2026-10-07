@@ -279,10 +279,20 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Force a reconnect; useful after the PC side restarts. */
+    /**
+     * Force a reconnect; useful after the PC side restarts.
+     *
+     * Deliberately the same path as a first connection, rather than reopening
+     * whatever address the link last settled on. Reopening that one is what made the
+     * button feel broken: after a fallback the link's remaining candidates are
+     * empty, so a reconnect could only retry the address it had already fallen back
+     * *to* - the public relay - and never the local one that had merely blipped. A
+     * user pressing reconnect is asking for a fresh attempt, so the full list is
+     * offered again, local address first.
+     */
     fun reconnect() {
         val settings = _state.value.settings
-        if (settings.isConfigured) link.connect(settings.toConnectionConfig())
+        if (settings.isConfigured) viewModelScope.launch { connectPreferred(settings) }
     }
 
     /** Re-read the session list. */
