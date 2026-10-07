@@ -68,7 +68,39 @@ window.__ModuleLoader__.load({
 			return null
 		}
 
+		/**
+		 * The stylesheet, in two parts.
+		 *
+		 * ## Why the colours are defined here
+		 *
+		 * An earlier version used `--dsw-alias-bg-primary`, `--dsw-alias-fill-l1` and
+		 * friends. None of them exist: the shell publishes a much smaller set, and an
+		 * undefined custom property makes its declaration invalid, so the sheet had no
+		 * background at all and the conversation showed through it.
+		 *
+		 * The shell projects its resolved theme onto the document - `html{color-scheme}`
+		 * for native controls, and `body[data-ds-dark-theme]` for the palette - so the
+		 * values are defined against that attribute rather than guessed. Every colour
+		 * is opaque on purpose: a translucent surface over a transcript is unreadable,
+		 * which is the report that prompted this.
+		 *
+		 * Split in two so the token block can be switched by appending one override,
+		 * rather than repeating a media query on every rule.
+		 */
+		const SHEET_TOKENS = [
+			// Dark is the default: the shell boots dark, and the light override below
+			// is what follows from the shell's own attribute.
+			".dshwd_sheet{--wd-bg:#16181d;--wd-bg2:#22262e;--wd-line:#333844;--wd-fg:#e7e9ee;",
+			"--wd-fg2:#a6acb8;--wd-accent:#4f7cff;--wd-accent-fg:#fff;--wd-good:#3fb950;--wd-bad:#f85149}",
+			// The one signal that matches what the user sees, because the shell sets it
+			// from the theme it resolved.
+			"body:not([data-ds-dark-theme]) .dshwd_sheet{--wd-bg:#fff;--wd-bg2:#f2f4f7;",
+			"--wd-line:#dfe3e9;--wd-fg:#17181c;--wd-fg2:#5b6270;--wd-accent:#3559d9;",
+			"--wd-accent-fg:#fff;--wd-good:#1a7f37;--wd-bad:#cf222e}",
+		].join("")
+
 		const CSS = [
+			// --- the bar: inherits the shell's own colours, which is right there ---
 			".dshwd_row{display:flex;align-items:center;gap:8px;min-height:24px;padding:0 2px;",
 			"font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}",
 			".dshwd_dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-tertiary)}",
@@ -89,62 +121,68 @@ window.__ModuleLoader__.load({
 			".dshwd_open{background:0 0;border:0;padding:0;font:inherit;text-align:left;cursor:pointer;",
 			"color:inherit;min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
 			".dshwd_open:hover{color:var(--dsw-alias-label-secondary)}",
-			// Detached from the composer, following dsh-api-dashboard's drawer.
+			// --- the sheet: detached from the composer, its own opaque colours ---
 			//
 			// Fixed rather than inline, and this is the whole point: the bar lives in
 			// the composer dock, where any ancestor with a transform or an overflow
-			// clips a panel that tries to grow out of it. The dashboard hit this too
-			// and moved its surface out of the flow, so this does the same - a sheet
-			// pinned to the bottom, above everything.
-			".dshwd_scrim{position:fixed;inset:0;z-index:99998;background:rgba(0,0,0,.35);",
+			// clips a panel that tries to grow out of it. dsh-api-dashboard hit the
+			// same thing and moved its surface out of the flow.
+			".dshwd_scrim{position:fixed;inset:0;z-index:99998;background:rgba(0,0,0,.45);",
 			"animation:dshwd-fade .15s ease-out;",
 			// A guard, not decoration: the mobile shell opens its sidebar on a stroke
-			// starting in the left half of the screen, and it listens in the capture
-			// phase, so no plugin can intercept it. It does step aside for a genuinely
-			// horizontally scrollable ancestor, so a 2px invisible overflow here makes
-			// the whole sheet fall under that rule. The scrim is fixed, so scrolling it
-			// moves nothing.
+			// starting in the left half of the screen and listens in the capture phase,
+			// so no plugin can intercept it. It does step aside for a genuinely
+			// horizontally scrollable ancestor, and the scrim is fixed, so a 2px
+			// invisible overflow here costs nothing.
 			"overflow-x:auto;overflow-y:hidden;scrollbar-width:none}",
 			".dshwd_scrim::-webkit-scrollbar{display:none}",
+			SHEET_TOKENS,
 			".dshwd_sheet{position:fixed;left:0;right:0;bottom:0;z-index:99999;",
-			"max-height:min(80vh,calc(100vh - 24px));background:var(--dsw-alias-bg-primary);",
-			"border-radius:18px 18px 0 0;box-shadow:0 -8px 32px rgba(0,0,0,.18);",
+			"max-height:min(80vh,calc(100vh - 24px));",
+			"background:var(--wd-bg);color:var(--wd-fg);",
+			"border-radius:18px 18px 0 0;box-shadow:0 -8px 32px rgba(0,0,0,.36);",
 			"display:flex;flex-direction:column;overflow:hidden;",
 			"animation:dshwd-rise .22s cubic-bezier(.16,1,.3,1)}",
 			"@media (min-width:561px){.dshwd_sheet{width:min(560px,calc(100vw - 48px));margin:0 auto;bottom:12px;",
-			"border-radius:18px;box-shadow:0 24px 64px rgba(0,0,0,.22)}}",
+			"border-radius:18px;box-shadow:0 24px 64px rgba(0,0,0,.4)}}",
 			"@keyframes dshwd-rise{from{transform:translateY(100%)}to{transform:translateY(0)}}",
 			"@keyframes dshwd-fade{from{opacity:0}to{opacity:1}}",
-			".dshwd_grip{flex:none;padding:7px 0 3px;display:flex;justify-content:center;cursor:grab}",
-			".dshwd_grip span{width:34px;height:4px;border-radius:2px;background:var(--dsw-alias-separator-primary)}",
-			".dshwd_head{flex:none;display:flex;align-items:center;gap:8px;padding:2px 14px 8px;",
-			"font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}",
-			".dshwd_head .dshwd_x{margin-left:auto;font:inherit;font-size:12px;font-weight:400;cursor:pointer;",
-			"border:0;background:0 0;color:var(--dsw-alias-label-tertiary);padding:2px 6px;border-radius:5px}",
-			".dshwd_head .dshwd_x:hover{background:var(--dsw-alias-fill-l2)}",
-			".dshwd_body{overflow-y:auto;padding:0 14px 14px;display:flex;flex-direction:column;gap:9px}",
-			".dshwd_h{font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;",
-			"color:var(--dsw-alias-label-tertiary)}",
-			".dshwd_note{font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary)}",
+			".dshwd_grip{flex:none;padding:8px 0 4px;display:flex;justify-content:center;cursor:grab}",
+			".dshwd_grip span{width:34px;height:4px;border-radius:2px;background:var(--wd-line)}",
+			".dshwd_head{flex:none;display:flex;align-items:center;gap:8px;padding:2px 14px 10px;",
+			"font-size:14px;font-weight:600;color:var(--wd-fg)}",
+			".dshwd_x{margin-left:auto;font:inherit;font-size:12px;font-weight:400;cursor:pointer;",
+			"border:0;background:0 0;color:var(--wd-fg2);padding:3px 8px;border-radius:6px}",
+			".dshwd_x:hover{background:var(--wd-bg2);color:var(--wd-fg)}",
+			".dshwd_body{overflow-y:auto;padding:0 14px 16px;display:flex;flex-direction:column;gap:10px}",
+			".dshwd_h{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;",
+			"color:var(--wd-fg2)}",
+			".dshwd_note{font-size:12px;line-height:17px;color:var(--wd-fg2)}",
 			".dshwd_devices{display:flex;flex-wrap:wrap;gap:6px}",
 			".dshwd_dev{font:inherit;font-size:12px;font-family:var(--dsw-font-mono);cursor:pointer;",
-			"border:1px solid var(--dsw-alias-separator-primary);border-radius:7px;padding:5px 10px;",
-			"background:0 0;color:var(--dsw-alias-label-secondary);max-width:100%;overflow:hidden;",
+			"border:1px solid var(--wd-line);border-radius:7px;padding:5px 10px;",
+			"background:var(--wd-bg2);color:var(--wd-fg2);max-width:100%;overflow:hidden;",
 			"text-overflow:ellipsis;white-space:nowrap}",
-			".dshwd_dev:hover:not(:disabled){background:var(--dsw-alias-fill-l2)}",
-			".dshwd_devOn{border-color:var(--dsw-alias-label-primary);color:var(--dsw-alias-label-primary)}",
+			".dshwd_dev:hover:not(:disabled){color:var(--wd-fg)}",
+			".dshwd_devOn{border-color:var(--wd-accent);color:var(--wd-fg)}",
 			".dshwd_inrow{display:flex;gap:6px;align-items:center;flex-wrap:wrap}",
 			".dshwd_input{flex:1;min-width:130px;font:inherit;font-size:12px;font-family:var(--dsw-font-mono);",
-			"padding:5px 9px;border-radius:7px;border:1px solid var(--dsw-alias-separator-primary);",
-			"background:var(--dsw-alias-fill-l1);color:var(--dsw-alias-label-primary)}",
+			"padding:6px 9px;border-radius:7px;border:1px solid var(--wd-line);",
+			"background:var(--wd-bg2);color:var(--wd-fg)}",
 			".dshwd_go{font:inherit;font-size:12px;font-weight:600;cursor:pointer;border:0;",
-			"border-radius:7px;padding:6px 14px;background:var(--dsw-alias-button-primary-fill);",
-			"color:var(--dsw-alias-button-primary-label)}",
-			".dshwd_go:disabled{opacity:.5;cursor:default}",
+			"border-radius:7px;padding:7px 16px;background:var(--wd-accent);color:var(--wd-accent-fg)}",
+			".dshwd_go:disabled{opacity:.45;cursor:default}",
+			// The mode buttons are used in both places, so inside the sheet they take
+			// the sheet's colours: the bar's rules above use shell tokens, which
+			// resolve to nothing against a surface the shell does not own.
+			".dshwd_sheet .dshwd_mode{color:var(--wd-fg2);padding:5px 10px;border-radius:7px;font-size:12px}",
+			".dshwd_sheet .dshwd_mode:hover:not(:disabled){color:var(--wd-fg);background:var(--wd-bg2)}",
+			".dshwd_sheet .dshwd_modeOn{color:var(--wd-fg);background:var(--wd-bg2);",
+			"box-shadow:inset 0 0 0 1px var(--wd-accent)}",
 			".dshwd_result{font-size:12px;line-height:17px;white-space:pre-wrap;word-break:break-word;",
-			"border-radius:7px;padding:7px 9px;background:var(--dsw-alias-fill-l1)}",
-			".dshwd_good{color:var(--dsw-alias-state-success-primary)}",
-			".dshwd_bad{color:var(--dsw-alias-state-error-primary)}",
+			"border-radius:7px;padding:8px 10px;background:var(--wd-bg2);border:1px solid var(--wd-line)}",
+			".dshwd_good{color:var(--wd-good)}",
+			".dshwd_bad{color:var(--wd-bad)}",
 		].join("")
 
 		/**
