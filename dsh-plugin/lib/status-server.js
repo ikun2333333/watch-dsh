@@ -34,11 +34,12 @@ import { createServer } from 'node:http'
 const MAX_BODY_BYTES = 4 * 1024
 
 /**
- * Read the requested mode from a POST body.
+ * Read a request body as JSON.
  *
- * @returns the mode name, or null when the body does not name one.
+ * @returns the parsed object, or an empty object for an empty body, so a command
+ *   with no arguments does not have to send one.
  */
-function readMode(req) {
+function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0
     const chunks = []
@@ -54,11 +55,13 @@ function readMode(req) {
     req.on('error', reject)
     req.on('end', () => {
       const raw = Buffer.concat(chunks).toString('utf8').trim()
-      if (raw === '') return resolve(null)
+      if (raw === '') {
+        resolve({})
+        return
+      }
       try {
         const parsed = JSON.parse(raw)
-        const mode = typeof parsed?.mode === 'string' ? parsed.mode : null
-        resolve(mode === 'lan' || mode === 'public' ? mode : null)
+        resolve(parsed !== null && typeof parsed === 'object' ? parsed : {})
       } catch (error) {
         reject(new Error(`body is not JSON: ${error.message}`))
       }
@@ -76,15 +79,15 @@ const PORT_SCAN = 8
  * Start the status endpoint.
  *
  * @param getStatus - called per request, so the document is never stale.
- * @param setMode - called with a mode name to switch the relay the bridge dials.
- *   Returning a falsy value means the switch was refused, and the response says so
- *   rather than reporting a success that did not happen.
+ * @param commands - route name to handler. Each takes the parsed body and returns
+ *   a result object; `ok: false` makes the response a 400, because a command that
+ *   ran and answered "no" is not the same as a malformed request.
  * @param log - where to record a failure, since a silent listener is worse than
  *   none at all.
  * @param startPort - first port to try.
  * @returns the bound port, or null when nothing could be bound.
  */
-export async function startStatusServer(getStatus, setMode, log, startPort = DEFAULT_STATUS_PORT) {
+export async function startStatusServer(getStatus, commands, log, startPort = DEFAULT_STATUS_PORT) {
   for (let offset = 0; offset < PORT_SCAN; offset += 1) {
     const port = startPort + offset
     const server = createServer((req, res) => {
@@ -106,34 +109,41 @@ export async function startStatusServer(getStatus, setMode, log, startPort = DEF
 
       const route = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
 
-      // Switching is a POST so that a prefetch or a stray GET cannot move the
-      // bridge to a relay the user did not ask for.
-      if (req.method === 'POST' && (route === '/' || route === '/mode')) {
-        readMode(req)
-          .then((mode) => {
-            const applied = mode === null ? null : setMode(mode)
-            if (!applied) {
-              res.writeHead(400)
-              res.end(JSON.stringify({ ok: false, error: 'mode not applied' }))
-              return
-            }
-            res.writeHead(200)
-            res.end(JSON.stringify({ ok: true, mode: applied, status: getStatus() }))
-          })
-          .catch((error) => {
-            res.writeHead(400)
-            res.end(JSON.stringify({ ok: false, error: error?.message ?? String(error) }))
-          })
+      // Everything beyond the status document is a command, and every command is a
+      // POST: a GET is something a prefetch or a stray navigation can perform, and
+      // none of these - moving the bridge to another relay, pairing a watch - is
+      // safe to do by accident.
+      if (req.method !== 'POST') {
+        try {
+          res.writeHead(200)
+          res.end(JSON.stringify(getStatus()))
+        } catch (error) {
+          res.writeHead(500)
+          res.end(JSON.stringify({ error: error?.message ?? String(error) }))
+        }
         return
       }
 
-      try {
-        res.writeHead(200)
-        res.end(JSON.stringify(getStatus()))
-      } catch (error) {
-        res.writeHead(500)
-        res.end(JSON.stringify({ error: error?.message ?? String(error) }))
+      const handler = commands[route === '/' ? '/mode' : route]
+      if (handler === undefined) {
+        res.writeHead(404)
+        res.end(JSON.stringify({ ok: false, error: `no such command: ${route}` }))
+        return
       }
+
+      readJsonBody(req)
+        .then(handler)
+        .then((result) => {
+          // The handler decides its own status code: a pairing that could not reach
+          // the watch is a completed request with a negative answer, not a
+          // malformed one.
+          res.writeHead(result?.ok === false ? 400 : 200)
+          res.end(JSON.stringify({ ...result, status: getStatus() }))
+        })
+        .catch((error) => {
+          res.writeHead(400)
+          res.end(JSON.stringify({ ok: false, error: error?.message ?? String(error) }))
+        })
     })
 
     const bound = await new Promise((resolve) => {

@@ -146,16 +146,26 @@ class WatchViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             ConfigFile.read(getApplication())?.let { imported ->
                 Diag.log(getApplication(), "importing config for pc=${imported.pcId}")
+                // `lanRelayUrl` has to be carried through. It is the whole reason a
+                // config may hold two addresses, and leaving it out meant a pushed
+                // config silently dropped the local path: the watch kept the public
+                // relay as its only candidate and reported "PC not running" at home,
+                // where the local relay was the one it could actually reach. The
+                // comment on the format promised both; only one was being applied.
                 settingsStore.saveConnection(
                     imported.relayUrl,
                     imported.relayToken,
                     imported.pairingSecret,
                     imported.pcId,
+                    imported.lanRelayUrl,
                 )
                 // It holds a credential; keeping it on external storage would leave
                 // it where a later `adb pull` could still read it.
                 ConfigFile.consume(getApplication())
-                Diag.log(getApplication(), "config imported and consumed")
+                Diag.log(
+                    getApplication(),
+                    "config imported and consumed; candidates=${imported.lanRelayUrl.ifBlank { "-" }} then ${imported.relayUrl}",
+                )
             }
         }
         // Settings drive the link: saving them is what (re)connects. Only distinct

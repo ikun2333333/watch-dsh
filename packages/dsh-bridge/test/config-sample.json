@@ -1,0 +1,9 @@
+{
+  "dsh": "watch-dsh-config",
+  "v": 1,
+  "pcId": "mcphonk",
+  "relayUrl": "ws://192.168.10.28:8787",
+  "lanRelayUrl": "ws://192.168.10.28:8787",
+  "relayToken": "token-value",
+  "pairingSecret": "secret-value"
+}

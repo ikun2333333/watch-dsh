@@ -32,6 +32,7 @@ import { appendFileSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { WatchLink } from './supervisor.js'
 import { startStatusServer } from './status-server.js'
 import { findHarnessUrl } from './find-harness.js'
+import { listDevices, connectDevice, pairWatch } from './pairing.js'
 
 /** Where the watch-dsh checkout lives, unless the config says otherwise. */
 const DEFAULT_REPO = 'C:\\Users\\q1375\\Documents\\watch-dsh'
@@ -142,26 +143,56 @@ export function apply(ctx, config) {
     // a plugin that blocks its own activation on a socket is a plugin that can
     // hold up whatever waits for it.
     //
-    // The mode switch goes through this listener rather than through the host's UI
-    // plumbing for the same reason the status does: it is the one channel the
-    // plugin owns end to end, so it behaves the same in both shells.
-    let statusServer = null
-    startStatusServer(
-      status,
-      (mode) => {
+    // Commands go through this listener rather than through the host's UI plumbing
+    // for the same reason the status does: it is the one channel the plugin owns
+    // end to end, so it behaves the same in both shells.
+    const commands = {
+      '/mode': ({ mode }) => {
         const applied = link.setMode(mode)
-        if (applied !== mode) return null
-        // Refused switches report null so the response never claims a success that
-        // did not happen; a real switch restarts the bridge, which is why `--relay`
-        // cannot simply be re-argued on a running process.
+        if (applied !== mode) return { ok: false, error: 'that mode could not be applied' }
+        // A real switch restarts the bridge, which is why `--relay` cannot simply be
+        // re-argued on a running process. Not awaited: the answer is that the switch
+        // was accepted, and the status line reports when the new link is up.
         void link
           .restart()
           .then(() => log(`switched to ${applied}`))
           .catch((error) => log(`switching failed: ${error?.message ?? String(error)}`))
-        return applied
+        return { ok: true, mode: applied }
       },
-      log,
-    )
+      '/devices': () => listDevices(adbPath(repo)),
+      '/connect': async ({ address }) => {
+        const result = await connectDevice(adbPath(repo), String(address ?? ''))
+        return result.ok ? { ...result, devices: (await listDevices(adbPath(repo))).devices } : result
+      },
+      '/pair': async ({ serial, mode: pairMode }) => {
+        const devices = await listDevices(adbPath(repo))
+        if (devices.ok !== true) return { ok: false, error: devices.error }
+
+        const target = String(serial ?? devices.usable?.[0] ?? '')
+        if (target === '') return { ok: false, error: 'no watch is connected over adb' }
+        if (!(devices.usable ?? []).includes(target)) {
+          return { ok: false, error: `${target} is not ready (${devices.devices.find((d) => d.serial === target)?.state ?? 'unknown'})` }
+        }
+
+        const snapshot = link.snapshot()
+        const result = await pairWatch({
+          adb: adbPath(repo),
+          serial: target,
+          stateDir: join(repo, '.state'),
+          // Anything other than the two forced modes writes both addresses, which
+          // is the pairing that keeps working away from home.
+          mode: pairMode === 'lan' || pairMode === 'public' ? pairMode : 'both',
+          pcId: snapshot.bridge.pcId ?? '',
+          publicRelayUrl: link.publicRelayUrl,
+          lanRelayUrl: `ws://${link.lanAddress()}:${link.relayPort}`,
+          log,
+        })
+        return { ...result, serial: target }
+      },
+    }
+
+    let statusServer = null
+    startStatusServer(status, commands, log)
       .then((server) => {
         statusServer = server
       })
@@ -251,6 +282,17 @@ function delay(ms) {
     const timer = setTimeout(resolve, ms)
     timer.unref?.()
   })
+}
+
+/**
+ * The adb this repository ships, beside the rest of its Android tooling.
+ *
+ * Resolved from the repository rather than from PATH because adb is not on PATH on
+ * a machine that has only ever built this app from here, and a pairing panel that
+ * cannot find its own tool is a pairing panel that reports "no watch connected".
+ */
+function adbPath(repo) {
+  return join(repo, 'tools', 'android', 'sdk', 'platform-tools', 'adb.exe')
 }
 
 /**
